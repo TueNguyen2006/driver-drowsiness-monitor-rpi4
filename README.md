@@ -45,7 +45,7 @@ Quan trọng:
 ## 3. Clone và setup
 
 ```bash
-git clone <https://github.com/TueNguyen2006/driver-drowsiness-monitor-rpi4.git>
+git clone https://github.com/TueNguyen2006/driver-drowsiness-monitor-rpi4.git
 cd driver-drowsiness-monitor-rpi4
 python3 -m venv .venv
 source .venv/bin/activate
