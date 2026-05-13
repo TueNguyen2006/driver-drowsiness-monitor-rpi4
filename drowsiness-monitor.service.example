@@ -1,0 +1,15 @@
+[Unit]
+Description=Drowsiness Monitor
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/New
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/New/.venv/bin/python /home/pi/New/main.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
