@@ -1,0 +1,21 @@
+[Unit]
+Description=Driver Drowsiness Monitor - Industrial Kiosk
+After=network.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/driver-drowsiness-monitor
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/home/pi/driver-drowsiness-monitor/.venv/bin/python run_kiosk.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/pi/driver-drowsiness-monitor/kiosk.log
+StandardError=append:/home/pi/driver-drowsiness-monitor/kiosk.log
+
+[Install]
+WantedBy=multi-user.target

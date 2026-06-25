@@ -1,0 +1,57 @@
+thresholds:
+  ear_zscore_threshold: -2.0
+  mar_zscore_threshold: 30.0
+  ear_trigger_frames: 30
+  pitch_trigger_frames: 15
+  pitch_upper: 0.3
+  pitch_lower: -0.2
+  phone_confidence: 0.45
+  missing_face_frames: 8
+  eye_closed_frames: 8
+  drowsy_frames: 36
+  distracted_frames: 12
+
+vision:
+  provider: auto
+  face_landmarker_model: /home/pi/driver-drowsiness-monitor/models/face_landmarker.task
+  process_every_n_frames: 2
+  draw_landmarks: true
+  camera_index: 0
+
+object_detector:
+  enabled: false
+  provider: yolo11n
+  model_path: /home/pi/yolo11n.onnx
+  confidence_threshold: 0.25
+  phone_labels: ["cell phone", "phone", "mobile"]
+
+calibration:
+  frame_count: 100
+
+lstm:
+  model_path: /home/pi/driver-drowsiness-monitor/models/lstm_latest_scripted.pt
+
+head_pose:
+  model_path: /home/pi/driver-drowsiness-monitor/models/model.pkl
+
+hardware:
+  gpio_enabled: true
+  led_calibration_pin: 2
+  led_inference_pin: 3
+  button_restart_pin: 14
+  button_pause_pin: 15
+  beep_frequency: 1850
+  beep_duration: 0.45
+  beep_interval: 1.75
+  alert_hold_seconds: 2.5
+  alert_stable_seconds: 1.2
+
+runtime:
+  write_video: false
+  display: true
+  phone_enabled: false
+  alert_cooldown_seconds: 2.0
+
+report:
+  unsafe_threshold: 0.45
+  timeline_stride_frames: 3

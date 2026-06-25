@@ -1,0 +1,18 @@
+# Generated outputs
+runs/
+
+# Large videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Local test data
+test_data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
