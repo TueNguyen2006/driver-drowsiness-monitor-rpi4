@@ -6,16 +6,16 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/driver-drowsiness-monitor
+WorkingDirectory=%h/driver-drowsiness-monitor-rpi4
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=XAUTHORITY=%h/.Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/home/pi/driver-drowsiness-monitor/.venv/bin/python run_kiosk.py
+ExecStart=%h/driver-drowsiness-monitor-rpi4/.venv/bin/python run_kiosk.py
 Restart=always
 RestartSec=3
-StandardOutput=append:/home/pi/driver-drowsiness-monitor/kiosk.log
-StandardError=append:/home/pi/driver-drowsiness-monitor/kiosk.log
+StandardOutput=append:%h/driver-drowsiness-monitor-rpi4/kiosk.log
+StandardError=append:%h/driver-drowsiness-monitor-rpi4/kiosk.log
 
 [Install]
 WantedBy=multi-user.target

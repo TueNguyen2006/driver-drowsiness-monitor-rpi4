@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -249,8 +250,12 @@ def infer(video_files, frames_take_for_dataset=8000, filter_label=False, output_
 if __name__ == "__main__":
     model_head_pose = pickle.load(open(cfg.MODEL_HEAD_POSE, 'rb'))
     # model_fatigue = joblib.load(cfg.MODEL_FATIGUE)
+    dataset_dir = Path(os.getenv("DROWSINESS_DATASET_DIR", "dataset"))
     videos = [
-        [r"D:\Tue2413823\du_anNCKH\dataset\Dash\Dash\Female\1-FemaleNoGlasses.avi", r"D:\Tue2413823\du_anNCKH\dataset\Dash\Dash\Female\2-FemaleNoGlasses.avi"],
+        [
+            str(dataset_dir / "Dash" / "Female" / "1-FemaleNoGlasses.avi"),
+            str(dataset_dir / "Dash" / "Female" / "2-FemaleNoGlasses.avi"),
+        ],
         # ... Thêm các file khác vào đây
     ]
     

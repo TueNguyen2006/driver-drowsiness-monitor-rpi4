@@ -18,8 +18,11 @@ class CalibrationParams:
     moe_mean: float = 0.0
     moe_std: float = 0.1
     pitch_offset: float = 0.0
+    pitch_std: float = 0.05
     yaw_offset: float = 0.0
+    yaw_std: float = 0.05
     roll_offset: float = 0.0
+    roll_std: float = 0.05
     calibrated: bool = False
 
     ear_buffer: list[float] = field(default_factory=list)
@@ -61,8 +64,11 @@ class CalibrationParams:
         self.moe_mean = float(np.mean(self.moe_buffer))
         self.moe_std = float(np.std(self.moe_buffer)) or 0.01
         self.pitch_offset = float(np.mean(self.pitch_buffer))
+        self.pitch_std = float(np.std(self.pitch_buffer)) or 0.01
         self.yaw_offset = float(np.mean(self.yaw_buffer))
+        self.yaw_std = float(np.std(self.yaw_buffer)) or 0.01
         self.roll_offset = float(np.mean(self.roll_buffer))
+        self.roll_std = float(np.std(self.roll_buffer)) or 0.01
         self.calibrated = True
 
     def normalize_ear(self, ear: float) -> float:
@@ -90,11 +96,29 @@ class CalibrationParams:
 class SmartCalibrator:
     def __init__(self, params: CalibrationParams,
                  min_samples: int = 50,
-                 max_samples: int = 200) -> None:
+                 max_samples: int = 200,
+                 min_ear: float = 0.15,
+                 max_mar: float = 0.60,
+                 max_abs_pitch: float = 1.25,
+                 max_abs_yaw: float = 1.25,
+                 max_abs_roll: float = 1.25,
+                 stable_window_size: int = 10,
+                 ear_std_max: float = 0.01,
+                 mar_std_max: float = 0.02,
+                 pose_std_max: float = 0.08) -> None:
         self._params = params
         self._min = min_samples
         self._max = max_samples
         self._good_frames = 0
+        self._min_ear = min_ear
+        self._max_mar = max_mar
+        self._max_abs_pitch = max_abs_pitch
+        self._max_abs_yaw = max_abs_yaw
+        self._max_abs_roll = max_abs_roll
+        self._stable_window_size = stable_window_size
+        self._ear_std_max = ear_std_max
+        self._mar_std_max = mar_std_max
+        self._pose_std_max = pose_std_max
         self._queue: queue.Queue[tuple[float, ...]] = queue.Queue(maxsize=500)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._running = True
@@ -120,31 +144,31 @@ class SmartCalibrator:
                 continue
 
             window.append(sample)
-            max_win = max(self._max, 60)
+            max_win = max(self._max, self._stable_window_size * 2, 60)
             if len(window) > max_win * 2:
                 window = window[-max_win:]
 
             ear, mar, _puc, _moe, pitch, yaw, _roll = sample
 
-            if ear <= 0.15:
+            if ear <= self._min_ear:
                 continue
-            if mar >= 0.60:
+            if mar >= self._max_mar:
+                continue
+            if abs(pitch) > self._max_abs_pitch or abs(yaw) > self._max_abs_yaw or abs(_roll) > self._max_abs_roll:
                 continue
 
-            if len(window) >= 15:
-                ears = np.array([s[0] for s in window[-15:]])
-                mars = np.array([s[1] for s in window[-15:]])
-                if np.std(ears) > 0.002:
+            if len(window) >= self._stable_window_size:
+                recent = window[-self._stable_window_size:]
+                ears = np.array([s[0] for s in recent])
+                mars = np.array([s[1] for s in recent])
+                pitches = np.array([s[4] for s in recent])
+                yaws = np.array([s[5] for s in recent])
+                rolls = np.array([s[6] for s in recent])
+                if np.std(ears) > self._ear_std_max:
                     continue
-                if np.std(mars) > 0.005:
+                if np.std(mars) > self._mar_std_max:
                     continue
-
-            if len(window) >= 30:
-                pitches = np.array([s[3] for s in window[-30:]])
-                yaws = np.array([s[4] for s in window[-30:]])
-                if np.std(pitches) > 0.03:
-                    continue
-                if np.std(yaws) > 0.03:
+                if max(np.std(pitches), np.std(yaws), np.std(rolls)) > self._pose_std_max:
                     continue
 
             self._params.add_sample(ear, mar, _puc, _moe, pitch, yaw, _roll)

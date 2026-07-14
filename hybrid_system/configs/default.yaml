@@ -21,7 +21,7 @@ thresholds:
 
 vision:
   provider: auto
-  face_landmarker_model: /tmp/face_landmarker.task
+  face_landmarker_model: models/face_landmarker.task
   fallback_to_haar: true
   process_every_n_frames: 2
   draw_landmarks: true
@@ -31,24 +31,35 @@ vision:
 
 object_detector:
   enabled: true
-  provider: ultralytics
-  model_path: /home/tuenguyen/driver-drowsiness-monitor/yolov8n.pt
-  confidence_threshold: 0.4
+  provider: onnx
+  model_path: yolov8n.onnx
+  confidence_threshold: 0.25
   iou_threshold: 0.45
   phone_labels:
     - cell phone
+    - mobile phone
+    - phone
 
 calibration:
   frame_count: 100
   frames_start: 0
+  min_ear: 0.15
+  max_mar: 0.60
+  max_abs_pitch: 1.25
+  max_abs_yaw: 1.25
+  max_abs_roll: 1.25
+  stable_window_size: 10
+  ear_std_max: 0.01
+  mar_std_max: 0.02
+  pose_std_max: 0.08
 
 lstm:
-  model_path: /home/tuenguyen/driver-drowsiness-monitor/models/clf_lstm.pth
+  model_path: models/clf_lstm.pth
   input_sequence_length: 20
   classification_threshold: 3
 
 head_pose:
-  model_path: /home/tuenguyen/driver-drowsiness-monitor/models/model.pkl
+  model_path: models/model.pkl
   axis_draw_size: 50
 
 hardware:
@@ -81,3 +92,4 @@ signal_weights:
   yawning: 0.22
   distracted: 0.34
   phone_use: 0.64
+  face_lost: 0.25

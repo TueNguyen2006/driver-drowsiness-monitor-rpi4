@@ -7,6 +7,10 @@ from typing import Any
 import yaml
 
 
+PACKAGE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_DIR.parent
+
+
 @dataclass(slots=True)
 class ThresholdConfig:
     eye_aspect_ratio: float = 0.22
@@ -33,7 +37,7 @@ class ThresholdConfig:
 @dataclass(slots=True)
 class VisionConfig:
     provider: str = "auto"
-    face_landmarker_model: str = "/tmp/face_landmarker.task"
+    face_landmarker_model: str = "models/face_landmarker.task"
     fallback_to_haar: bool = True
     process_every_n_frames: int = 2
     draw_landmarks: bool = True
@@ -45,8 +49,8 @@ class VisionConfig:
 @dataclass(slots=True)
 class ObjectDetectorConfig:
     enabled: bool = True
-    provider: str = "yolo11n"
-    model_path: str = str(Path.home() / "yolo11n.onnx")
+    provider: str = "onnx"
+    model_path: str = "yolov8n.onnx"
     confidence_threshold: float = 0.25
     iou_threshold: float = 0.45
     phone_labels: list[str] = field(default_factory=lambda: ["cell phone", "phone", "mobile"])
@@ -56,18 +60,27 @@ class ObjectDetectorConfig:
 class CalibrationConfig:
     frame_count: int = 100
     frames_start: int = 0
+    min_ear: float = 0.15
+    max_mar: float = 0.60
+    max_abs_pitch: float = 1.25
+    max_abs_yaw: float = 1.25
+    max_abs_roll: float = 1.25
+    stable_window_size: int = 10
+    ear_std_max: float = 0.01
+    mar_std_max: float = 0.02
+    pose_std_max: float = 0.08
 
 
 @dataclass(slots=True)
 class LSTMConfig:
-    model_path: str = ""
+    model_path: str = "models/clf_lstm.pth"
     input_sequence_length: int = 20
     classification_threshold: int = 3
 
 
 @dataclass(slots=True)
 class HeadPoseConfig:
-    model_path: str = ""
+    model_path: str = "models/model.pkl"
     axis_draw_size: int = 50
 
 
@@ -119,16 +132,18 @@ class HybridConfig:
 def load_config(path: str | Path | None = None) -> HybridConfig:
     config = HybridConfig()
     if path is None:
-        default_path = Path(__file__).parent / "configs" / "default.yaml"
+        default_path = PACKAGE_DIR / "configs" / "default.yaml"
         path = default_path if default_path.exists() else None
     if path is None:
         return config
 
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    config_path = Path(path)
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Config file must contain a mapping: {path}")
     merged = asdict(config)
     _deep_update(merged, data)
+    _resolve_paths(merged, config_path.parent)
     return _from_nested(merged)
 
 
@@ -153,3 +168,33 @@ def _deep_update(target: dict[str, Any], update: dict[str, Any]) -> None:
             _deep_update(target[key], value)
         else:
             target[key] = value
+
+
+def _resolve_paths(data: dict[str, Any], base_dir: Path) -> None:
+    path_fields = [
+        ("vision", "face_landmarker_model"),
+        ("object_detector", "model_path"),
+        ("lstm", "model_path"),
+        ("head_pose", "model_path"),
+    ]
+    for section, field in path_fields:
+        section_data = data.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        value = section_data.get(field)
+        if not value:
+            continue
+        value_str = str(value)
+        value_path = Path(value_str)
+        if value_path.is_absolute():
+            continue
+        candidates = [
+            (base_dir / value_path).resolve(),
+            (PROJECT_ROOT / value_path).resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                section_data[field] = str(candidate)
+                break
+        else:
+            section_data[field] = str(candidates[-1])

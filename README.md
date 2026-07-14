@@ -149,9 +149,9 @@ After=network.target sound.target
 
 [Service]
 User=pi
-WorkingDirectory=/home/pi/New
+WorkingDirectory=%h/driver-drowsiness-monitor-rpi4
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/pi/New/.venv/bin/python /home/pi/New/main.py
+ExecStart=%h/driver-drowsiness-monitor-rpi4/.venv/bin/python run_kiosk.py
 Restart=always
 RestartSec=2
 

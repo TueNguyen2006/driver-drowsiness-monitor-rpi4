@@ -13,10 +13,11 @@ import time
 import wave
 
 GPIO = None
+
 if sys.platform == "linux":
     try:
         import RPi.GPIO as GPIO
-    except ImportError:
+    except (ImportError, RuntimeError):
         GPIO = None
 
 
@@ -191,10 +192,14 @@ class HardwareController:
                 out = subprocess.run([path, "--voices"], capture_output=True, text=True, timeout=5)
                 has_vi = "vi" in out.stdout or "Vietnamese" in out.stdout
                 return (path, has_vi)
+        for cmd in self._windows_powershell_candidates() + ("pwsh", "powershell"):
+            path = shutil.which(cmd)
+            if path:
+                return (path, False)
         return None
 
     def _resolve_audio_player(self) -> str | None:
-        for cmd in ("aplay", "paplay", "ffplay"):
+        for cmd in ("ffplay", "paplay", "aplay"):
             path = shutil.which(cmd)
             if path:
                 return path
@@ -203,11 +208,15 @@ class HardwareController:
     def _speak_blocking(self, text: str) -> None:
         if self._speech_cmd is None:
             return
-        speech_path, has_vi = self._speech_cmd
+        speech_path = self._speech_cmd[0]
+        has_vi = len(self._speech_cmd) > 1 and bool(self._speech_cmd[1])
+        backend = "powershell" if os.path.basename(speech_path).lower().startswith(("powershell", "pwsh")) else "espeak"
         voice = "vi" if has_vi else "en"
         alsa_dev = getattr(self.cfg, "alsa_device", "")
         with self.audio_lock:
-            if self._audio_player_cmd and os.path.basename(self._audio_player_cmd) == "aplay":
+            if backend == "powershell":
+                self._powershell_speak(speech_path, text)
+            elif self._audio_player_cmd and os.path.basename(self._audio_player_cmd) == "aplay":
                 dev_flag = ["-D", alsa_dev] if alsa_dev else []
                 speak = subprocess.Popen(
                     [speech_path, "-s", "150", "-a", "200", "-v", voice, "--stdout", text],
@@ -215,6 +224,19 @@ class HardwareController:
                 )
                 subprocess.run(
                     [self._audio_player_cmd, "-q", *dev_flag],
+                    stdin=speak.stdout, check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                if speak.stdout:
+                    speak.stdout.close()
+                speak.wait()
+            elif self._audio_player_cmd and os.path.basename(self._audio_player_cmd) == "ffplay":
+                speak = subprocess.Popen(
+                    [speech_path, "-s", "150", "-a", "200", "-v", voice, "--stdout", text],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    [self._audio_player_cmd, "-nodisp", "-autoexit", "-loglevel", "quiet", "-i", "pipe:0"],
                     stdin=speak.stdout, check=False,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
@@ -230,6 +252,7 @@ class HardwareController:
 
     def _play_alert_beep(self) -> None:
         if self._audio_player_cmd is None:
+            self._play_alert_beep_windows_fallback()
             return
         beep_path = self._ensure_alert_beep_file()
         if beep_path is None:
@@ -241,6 +264,12 @@ class HardwareController:
                 dev_flag = ["-D", alsa_dev] if alsa_dev else []
                 subprocess.run(
                     [self._audio_player_cmd, "-q", *dev_flag, beep_path],
+                    check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif player == "ffplay":
+                subprocess.run(
+                    [self._audio_player_cmd, "-nodisp", "-autoexit", "-loglevel", "quiet", beep_path],
                     check=False,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
@@ -257,6 +286,64 @@ class HardwareController:
                     check=False,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
+
+    def _play_alert_beep_windows_fallback(self, beep_path: str | None = None) -> None:
+        ps = None
+        for cmd in self._windows_powershell_candidates() + ("pwsh", "powershell"):
+            ps = shutil.which(cmd)
+            if ps:
+                break
+        if not ps:
+            return
+        if beep_path is None:
+            beep_path = self._ensure_alert_beep_file()
+        if beep_path is None:
+            return
+        try:
+            win_path = subprocess.run(
+                ["wslpath", "-w", beep_path],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except Exception:
+            win_path = beep_path
+        script = (
+            f"$p = New-Object System.Media.SoundPlayer '{win_path}'; "
+            f"$p.PlaySync();"
+        )
+        subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    @staticmethod
+    def _windows_powershell_candidates() -> tuple[str, ...]:
+        candidates = ["powershell.exe"]
+        windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+        if windir:
+            candidates.append(os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+
+        system_drive = os.environ.get("SystemDrive", "C:").rstrip(":\\/")
+        drive_mount = os.path.join(os.sep, "mnt", system_drive.lower())
+        candidates.append(os.path.join(drive_mount, "Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+        return tuple(dict.fromkeys(candidates))
+
+    def _powershell_speak(self, ps_path: str, text: str) -> None:
+        safe_text = text.replace("'", "''")
+        script = (
+            "Add-Type -AssemblyName System.Speech; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Speak('{safe_text}');"
+        )
+        subprocess.run(
+            [ps_path, "-NoProfile", "-Command", script],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def _ensure_alert_beep_file(self) -> str | None:
         if self.alert_beep_path and os.path.exists(self.alert_beep_path):

@@ -14,24 +14,45 @@ from .models import DetectionEvent, DriverState, ProcessedFrame, Severity
 from .risk_scorer import RiskScorer, SignalSmoother
 
 import threading
+import time
 
 MAX_EVENTS = 256
 OBJECT_SKIP_INTERVAL = 3
 
 
+def open_camera_capture(src=0) -> cv2.VideoCapture:
+    candidates: list[tuple[object, int | None]] = []
+    if isinstance(src, int):
+        candidates.extend([
+            (f"/dev/video{src}", cv2.CAP_V4L2),
+            (src, cv2.CAP_V4L2),
+        ])
+    else:
+        candidates.extend([
+            (src, cv2.CAP_V4L2),
+        ])
+
+    for target, backend in candidates:
+        cap = cv2.VideoCapture(target) if backend is None else cv2.VideoCapture(target, backend)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+        cap.release()
+    return cv2.VideoCapture()
+
+
 class ThreadedCamera:
     """Separate thread for camera capture to maximize FPS."""
     def __init__(self, src=0):
-        self._cap = cv2.VideoCapture(src)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._cap = open_camera_capture(src)
         self._ret = False
         self._frame = None
         self._lock = threading.Lock()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        import time
-        while self._frame is None and self._running:
+        deadline = time.monotonic() + 2.0
+        while self._frame is None and self._running and time.monotonic() < deadline:
             time.sleep(0.005)
 
     def _loop(self):
@@ -79,11 +100,26 @@ class HybridPipeline:
         self.smoother = SignalSmoother(window_size=5)
         self.scorer = RiskScorer(config.signal_weights or None)
         calib_params = CalibrationParams()
-        cal_min = max(30, config.calibration.frame_count // 2)
+        cal_min = max(25, config.calibration.frame_count // 2)
         cal_max = config.calibration.frame_count
-        self.calibrator = SmartCalibrator(calib_params, min_samples=cal_min, max_samples=cal_max)
+        c = config.calibration
+        self.calibrator = SmartCalibrator(
+            calib_params,
+            min_samples=cal_min,
+            max_samples=cal_max,
+            min_ear=c.min_ear,
+            max_mar=c.max_mar,
+            max_abs_pitch=c.max_abs_pitch,
+            max_abs_yaw=c.max_abs_yaw,
+            max_abs_roll=c.max_abs_roll,
+            stable_window_size=c.stable_window_size,
+            ear_std_max=c.ear_std_max,
+            mar_std_max=c.mar_std_max,
+            pose_std_max=c.pose_std_max,
+        )
 
         self._missing_face_counter = 0
+        self._phone_hold_counter = 0
         self._events: list[DetectionEvent] = []
 
         self._ear_smoothed = -1000.0
@@ -201,11 +237,11 @@ class HybridPipeline:
         if landmarks is None or len(landmarks) < 468:
             self._missing_face_counter += 1
             if self._missing_face_counter >= self.cfg.thresholds.missing_face_frames:
-                raw_signals["distracted"] = 1.0
+                raw_signals["face_lost"] = 1.0
                 new_events.append(self._make_event(
                     timestamp, frame_index,
-                    "distracted", DriverState.DISTRACTED, 1.0, Severity.WARNING,
-                    "Distracted: driver attention not trackable",
+                    "face_lost", DriverState.NO_FACE, 1.0, Severity.WARNING,
+                    "Face not visible - cannot assess driver state",
                 ))
         else:
             self._missing_face_counter = 0
@@ -229,7 +265,11 @@ class HybridPipeline:
                 phone_events, phone_signal = self._process_objects(frame, timestamp, frame_index)
                 if phone_signal > raw_signals.get("phone_use", 0.0):
                     raw_signals["phone_use"] = phone_signal
+                    self._phone_hold_counter = self.cfg.thresholds.phone_hold_frames
                 new_events.extend(phone_events)
+            elif self._phone_hold_counter > 0:
+                raw_signals["phone_use"] = max(raw_signals.get("phone_use", 0.0), 1.0)
+                self._phone_hold_counter -= 1
 
         smoothed = self.smoother.update(raw_signals)
 
@@ -301,14 +341,17 @@ class HybridPipeline:
             self._moe_smoothed = self._moe_smoothed * d + (1 - d) * moe_n
 
         t = self.cfg.thresholds
+        pitch_thr = max(abs(t.pitch_upper), abs(t.pitch_lower))
+        yaw_thr = getattr(t, "yaw_threshold", 0.25)
 
-        # --- Pitch-based head drop (drowsy/distracted) ---
-        self._head_dropped = 1 if (pitch_n > t.pitch_upper or pitch_n < t.pitch_lower) else 0
-        self._pitch_count = self._pitch_count + 1 if self._head_dropped else 0
-
-        # --- Yaw-based lateral distraction ---
-        yaw_thr = getattr(t, 'yaw_threshold', 0.25)
-        self._yaw_distract_count = self._yaw_distract_count + 1 if abs(yaw_n) > yaw_thr else 0
+        if self.calibrator.calibrated:
+            self._head_dropped = 1 if abs(pitch_n) > pitch_thr else 0
+            self._pitch_count = self._pitch_count + 1 if self._head_dropped else 0
+            self._yaw_distract_count = self._yaw_distract_count + 1 if abs(yaw_n) > yaw_thr else 0
+        else:
+            self._head_dropped = 0
+            self._pitch_count = 0
+            self._yaw_distract_count = 0
 
         # --- LSTM inference ---
         inp = self._input_data
@@ -342,7 +385,6 @@ class HybridPipeline:
 
         drowsy = any([
             self._ear_trigger_count > t.ear_trigger_frames,
-            self._head_dropped and self._pitch_count >= t.pitch_trigger_frames,
             self._decision_count >= t.classification_threshold,
         ])
 
@@ -356,15 +398,16 @@ class HybridPipeline:
             signals["yawning"] = min(1.0, self._mar_trigger_count / 20.0)
 
         # --- Distraction signal ---
-        any_distracted = (
-            (self._head_dropped and self._pitch_count >= t.distracted_frames)
-            or self._yaw_distract_count >= t.distracted_frames
-        )
-        if any_distracted:
-            signals["distracted"] = min(1.0, max(
-                self._pitch_count / t.distracted_frames if self._head_dropped else 0,
-                self._yaw_distract_count / t.distracted_frames,
-            ) * 0.5)
+        if self.calibrator.calibrated:
+            any_distracted = (
+                (self._head_dropped and self._pitch_count >= t.distracted_frames)
+                or self._yaw_distract_count >= t.distracted_frames
+            )
+            if any_distracted:
+                signals["distracted"] = min(1.0, max(
+                    self._pitch_count / t.distracted_frames if self._head_dropped else 0,
+                    self._yaw_distract_count / t.distracted_frames,
+                ) * 0.5)
 
         if self._lstm_label is not None and self._lstm_label == 1:
             signals["drowsy"] = max(signals["drowsy"], 0.7)
@@ -398,14 +441,14 @@ class HybridPipeline:
                 Severity.WARNING,
                 "Sustained mouth opening detected - possible yawning",
             ))
-        if self._head_dropped and self._pitch_count >= t.distracted_frames:
+        if self.calibrator.calibrated and self._head_dropped and self._pitch_count >= t.distracted_frames:
             events.append(self._make_event(
                 timestamp, frame_index, "distracted", DriverState.DISTRACTED,
                 min(1.0, self._pitch_count / t.distracted_frames),
                 Severity.WARNING,
-                "Head drop detected",
+                "Head dropped - possible distraction",
             ))
-        if self._yaw_distract_count >= t.distracted_frames:
+        if self.calibrator.calibrated and self._yaw_distract_count >= t.distracted_frames:
             events.append(self._make_event(
                 timestamp, frame_index, "distracted", DriverState.DISTRACTED,
                 min(1.0, self._yaw_distract_count / t.distracted_frames),

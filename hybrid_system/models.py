@@ -12,6 +12,7 @@ class DriverState(str, Enum):
     YAWNING = "yawning"
     DISTRACTED = "distracted"
     PHONE_USE = "phone_use"
+    NO_FACE = "no_face"
 
 
 class Severity(str, Enum):

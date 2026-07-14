@@ -13,15 +13,15 @@ thresholds:
 
 vision:
   provider: auto
-  face_landmarker_model: /home/pi/driver-drowsiness-monitor/models/face_landmarker.task
+  face_landmarker_model: models/face_landmarker.task
   process_every_n_frames: 2
   draw_landmarks: true
   camera_index: 0
 
 object_detector:
   enabled: false
-  provider: yolo11n
-  model_path: /home/pi/yolo11n.onnx
+  provider: onnx
+  model_path: yolov8n.onnx
   confidence_threshold: 0.25
   phone_labels: ["cell phone", "phone", "mobile"]
 
@@ -29,10 +29,10 @@ calibration:
   frame_count: 100
 
 lstm:
-  model_path: /home/pi/driver-drowsiness-monitor/models/lstm_latest_scripted.pt
+  model_path: models/lstm_latest_scripted.pt
 
 head_pose:
-  model_path: /home/pi/driver-drowsiness-monitor/models/model.pkl
+  model_path: models/model.pkl
 
 hardware:
   gpio_enabled: true

@@ -1,5 +1,9 @@
 # Generated outputs
 runs/
+kiosk.log
+kiosk_reports/
+kiosk_recordings/
+webcam_recording/
 
 # Large videos
 *.mp4

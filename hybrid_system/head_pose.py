@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+import warnings
 from pathlib import Path
 
 import cv2
@@ -8,7 +9,7 @@ import numpy as np
 
 
 class HeadPoseEstimator:
-    __slots__ = ("model",)
+    __slots__ = ("model", "available")
 
     FOREHEAD = 10
     NOSE = 1
@@ -20,10 +21,21 @@ class HeadPoseEstimator:
     KEY_ORDER = [FOREHEAD, NOSE, MOUTH_LEFT, MOUTH_RIGHT, CHIN, LEFT_EYE, RIGHT_EYE]
 
     def __init__(self, model_path: str | Path) -> None:
-        with open(model_path, "rb") as f:
-            self.model = pickle.load(f)
+        self.model = None
+        self.available = False
+        try:
+            with open(model_path, "rb") as f:
+                self.model = pickle.load(f)
+            self.available = True
+        except Exception as exc:
+            warnings.warn(
+                f"Head pose model disabled: cannot load {model_path} ({exc})",
+                RuntimeWarning,
+            )
 
     def estimate(self, landmarks: list[tuple[float, float]]) -> tuple[float, float, float]:
+        if not self.available or self.model is None:
+            return 0.0, 0.0, 0.0
         if len(landmarks) < self.RIGHT_EYE + 1:
             return 0.0, 0.0, 0.0
         features = []

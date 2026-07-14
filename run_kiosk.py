@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hybrid_system.config import HybridConfig
+from hybrid_system.config import load_config
 from hybrid_system.kiosk import IndustrialKiosk
 
 
@@ -40,10 +40,7 @@ def main() -> None:
     )
     log = logging.getLogger("kiosk")
 
-    config = HybridConfig()
-    if args.config:
-        from hybrid_system.config import load_config
-        config = load_config(args.config)
+    config = load_config(args.config)
     if args.no_phone:
         config.runtime.phone_enabled = False
         config.object_detector.enabled = False

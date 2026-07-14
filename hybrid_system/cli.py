@@ -14,7 +14,7 @@ from hybrid_system.config import HybridConfig, load_config
 from hybrid_system.exports import export_run_artifacts
 from hybrid_system.models import DetectionEvent, SessionSummary
 from hybrid_system.overlay import AnnotatedVideoWriter, draw_overlay
-from hybrid_system.pipeline import HybridPipeline
+from hybrid_system.pipeline import HybridPipeline, open_camera_capture
 from hybrid_system.risk_scorer import RiskScorer
 from hybrid_system.ui import embed_kiosk_overlay
 
@@ -163,7 +163,7 @@ def analyze_video(video_path: str, output_dir: str, config: HybridConfig,
 
 def run_webcam(config: HybridConfig, camera_index: int = 0,
                kiosk_ui: bool = False) -> None:
-    cap = cv2.VideoCapture(camera_index)
+    cap = open_camera_capture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera {camera_index}")
 

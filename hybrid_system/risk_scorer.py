@@ -12,6 +12,7 @@ DEFAULT_SIGNAL_WEIGHTS = {
     "yawning": 0.22,
     "distracted": 0.34,
     "phone_use": 0.64,
+    "face_lost": 0.25,
 }
 
 
@@ -87,6 +88,7 @@ class RiskScorer:
             DriverState.EYES_CLOSED,
             DriverState.YAWNING,
             DriverState.DISTRACTED,
+            DriverState.NO_FACE,
         ]
         active = {event.state for event in events}
         for state in priority:

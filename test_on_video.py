@@ -7,8 +7,10 @@ import warnings
 import time
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
 import config as cfg
 import state
 
@@ -18,7 +20,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python.vision import FaceLandmarker, FaceLandmarkerOptions, RunningMode
 from mediapipe import Image, ImageFormat
 
-MODEL_PATH = "/tmp/face_landmarker.task"
+MODEL_PATH = str(BASE_DIR / "models" / "face_landmarker.task")
 options = FaceLandmarkerOptions(
     base_options=python.BaseOptions(model_asset_path=MODEL_PATH),
     running_mode=RunningMode.IMAGE,

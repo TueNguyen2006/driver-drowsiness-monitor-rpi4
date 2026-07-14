@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime
 from enum import Enum
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,7 @@ import numpy as np
 
 from .config import HybridConfig
 from .exports import export_run_artifacts
+from .display import create_display
 from .hardware_controller import HardwareController
 from .models import DetectionEvent, DriverState, SessionSummary
 from .overlay import AnnotatedVideoWriter
@@ -42,7 +44,7 @@ class IndustrialKiosk:
         "_latencies", "_alert_active", "_alert_start",
         "_last_alert_time", "_cal_start_time",
         "_last_gc", "_window_name",
-        "_fps_times",
+        "_fps_times", "_display",
     )
 
     PANEL_W = 320
@@ -52,6 +54,7 @@ class IndustrialKiosk:
 
     def __init__(self, config: HybridConfig) -> None:
         self.cfg = config
+        self.cfg.vision.process_every_n_frames = 1
         self.pipeline = HybridPipeline(config)
         self.hardware = HardwareController(config)
         self.mode = KioskMode.INIT
@@ -76,6 +79,7 @@ class IndustrialKiosk:
         self._cal_start_time = 0.0
         self._last_gc = 0.0
         self._fps_times: deque = deque(maxlen=30)
+        self._display = None
 
         self._window_name = "Driver Safety Kiosk"
 
@@ -85,11 +89,10 @@ class IndustrialKiosk:
         self.hardware.set_restart_callback(self._request_restart)
         self.hardware.set_pause_callback(self._toggle_pause)
         self.hardware.start()
-
-        cv2.namedWindow(self._window_name, cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty(
-            self._window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
-        )
+        self.hardware.test_audio()
+        self.hardware.queue_alert_beep()
+        self.hardware.speak_async("Hệ thống đã sẵn sàng", dedupe_window=0.0)
+        time.sleep(0.2)
 
         try:
             while self._running:
@@ -103,7 +106,6 @@ class IndustrialKiosk:
                     self._handle_restart()
 
                 if mode == KioskMode.INIT:
-                    self._open_camera()
                     self._enter_calibration()
                 elif mode == KioskMode.CALIBRATING:
                     self._run_calibration_loop()
@@ -156,6 +158,8 @@ class IndustrialKiosk:
         self._set_mode(KioskMode.CALIBRATING)
         self._cal_start_time = time.time()
         self._open_camera()
+        if self._display is None:
+            self._display = create_display(self._window_name, (800, 480), fullscreen=True, fps=self._fps)
         self.hardware.set_leds(calibration=True, inference=False)
         self.hardware.announce_calibration_start()
         log.info("Starting calibration")
@@ -182,7 +186,7 @@ class IndustrialKiosk:
             self._fps_times.append(now)
 
             overlay = self._draw_kiosk_frame(frame, result)
-            cv2.imshow(self._window_name, overlay)
+            self._show_frame(overlay)
             if self._writer:
                 self._writer.write(overlay)
 
@@ -195,7 +199,7 @@ class IndustrialKiosk:
                 log.info("Calibration complete, starting inference")
                 return
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            if not self._poll_display():
                 self._running = False
 
     def _run_inference_loop(self) -> None:
@@ -231,7 +235,7 @@ class IndustrialKiosk:
             self._handle_alerts(result)
 
             overlay = self._draw_kiosk_frame(frame, result)
-            cv2.imshow(self._window_name, overlay)
+            self._show_frame(overlay)
             if self._writer:
                 self._writer.write(overlay)
 
@@ -239,7 +243,7 @@ class IndustrialKiosk:
             if frame_count % 300 == 0:
                 gc.collect()
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            if not self._poll_display():
                 self._running = False
 
     def _run_paused_loop(self) -> None:
@@ -257,8 +261,8 @@ class IndustrialKiosk:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 2)
             cv2.putText(blank, "Press PAUSE button to resume", (self._frame_size[0] // 4, self._frame_size[1] // 2 + 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.imshow(self._window_name, blank)
-            if cv2.waitKey(100) & 0xFF == ord("q"):
+            self._show_frame(blank)
+            if not self._poll_display(10):
                 self._running = False
 
     def _run_error_loop(self) -> None:
@@ -270,10 +274,10 @@ class IndustrialKiosk:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
             cv2.putText(blank, "Restarting in 10s...", (self._frame_size[0] // 4, self._frame_size[1] // 2 + 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-            cv2.imshow(self._window_name, blank)
+            self._show_frame(blank)
             if time.time() - start > 10:
                 self._set_mode(KioskMode.INIT)
-            if cv2.waitKey(200) & 0xFF == ord("q"):
+            if not self._poll_display(5):
                 self._running = False
 
     def _grab_frame(self) -> np.ndarray | None:
@@ -291,18 +295,27 @@ class IndustrialKiosk:
         now = time.time()
         thr = self.cfg.report.unsafe_threshold
         cooldown = self.cfg.runtime.alert_cooldown_seconds
+        alert_events = [
+            event for event in result.events
+            if event.severity.value in ("warning", "critical")
+        ]
+        event_alert = bool(alert_events)
+        alert_requested = result.risk_score >= thr or event_alert
 
-        if result.risk_score >= thr:
+        if alert_requested:
             if not self._alert_active:
                 self._alert_start = now
                 self._alert_active = True
+                if alert_events:
+                    first_event = alert_events[0]
+                    self.hardware.speak_async(first_event.message, dedupe_window=5.0)
+                    self.hardware.queue_alert_beep()
             elif now - self._alert_start >= self.cfg.hardware.alert_stable_seconds:
                 if now - self._last_alert_time >= cooldown:
                     self.hardware.set_alert(True)
                     self._last_alert_time = now
-                    for event in result.events:
-                        if event.severity.value in ("warning", "critical"):
-                            log.warning("ALERT: %s (score=%.2f)", event.message, event.score)
+                    for event in alert_events:
+                        log.warning("ALERT: %s (score=%.2f)", event.message, event.score)
         else:
             if self._alert_active:
                 if now - self._alert_start >= self.cfg.hardware.alert_hold_seconds:
@@ -367,8 +380,8 @@ class IndustrialKiosk:
                     cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 2)
         cv2.putText(blank, msg[:50], (80, 280),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.imshow(self._window_name, blank)
-        cv2.waitKey(5000)
+        self._show_frame(blank)
+        self._poll_display(60)
 
     def _shutdown(self, start_ts: str) -> None:
         log.info("Kiosk shutting down")
@@ -404,5 +417,17 @@ class IndustrialKiosk:
                 log.error("Failed to save report: %s", e)
 
         self.hardware.cleanup()
-        cv2.destroyAllWindows()
+        if self._display is not None:
+            self._display.close()
         log.info("Kiosk shutdown complete")
+
+    def _show_frame(self, frame: np.ndarray) -> None:
+        if self._display is not None:
+            self._display.show(frame)
+        else:
+            cv2.imshow(self._window_name, frame)
+
+    def _poll_display(self, fps: int = 60) -> bool:
+        if self._display is not None:
+            return self._display.pump(fps)
+        return (cv2.waitKey(max(1, int(1000 / max(1, fps)))) & 0xFF) != ord("q")
