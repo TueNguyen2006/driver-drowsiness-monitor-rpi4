@@ -38,6 +38,16 @@ Recommended:
 - USB camera exposed as `/dev/video0` or another V4L2 device.
 - Speaker supported by ALSA/PulseAudio.
 
+## Installation
+
+Clone branch `clean-main`:
+
+```bash
+git clone --branch clean-main --single-branch \
+  https://github.com/TueNguyen2006/driver-drowsiness-monitor-rpi4.git
+
+cd driver-drowsiness-monitor-rpi4
+
 Install system packages:
 
 ```bash
