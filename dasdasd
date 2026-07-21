@@ -1,0 +1,163 @@
+[1mdiff --git a/README.md b/README.md[m
+[1mindex 906d165..301f1ba 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -86,6 +86,7 @@[m [mCommon options:[m
+ python3 run_kiosk.py --camera-index 0[m
+ python3 run_kiosk.py --camera-fourcc MJPG[m
+ python3 run_kiosk.py --debug-ui[m
+[32m+[m[32mpython3 run_kiosk.py --windowed[m
+ python3 run_kiosk.py --no-phone[m
+ python3 run_kiosk.py --no-display[m
+ ```[m
+[36m@@ -179,6 +180,8 @@[m [mphone_use > face_lost > drowsy > distracted > yawning[m
+ [m
+ The kiosk UI targets an 800x480 screen. Camera frames are scaled to cover the screen and center-cropped if the camera aspect ratio does not match 800x480. Landmarks use the same transform as the displayed frame so overlays stay aligned.[m
+ [m
+[32m+[m[32m`run_kiosk.py` starts fullscreen by default. Use `--windowed` only for desktop debugging when you want the normal window frame and title bar.[m
+[32m+[m
+ Available display backends depend on installed packages and config:[m
+ [m
+ ```bash[m
+[1mdiff --git a/configs/default.yaml b/configs/default.yaml[m
+[1mindex c87f071..08feec9 100644[m
+[1m--- a/configs/default.yaml[m
+[1m+++ b/configs/default.yaml[m
+[36m@@ -59,8 +59,8 @@[m [mhardware:[m
+ runtime:[m
+   write_video: false[m
+   display: true[m
+[31m-  display_backend: opencv[m
+[31m-  fullscreen: false[m
+[32m+[m[32m  display_backend: auto[m
+[32m+[m[32m  fullscreen: true[m
+   async_output: false[m
+   kiosk_debug: false[m
+   phone_enabled: false[m
+[1mdiff --git a/hybrid_system/config.py b/hybrid_system/config.py[m
+[1mindex 71d44b8..b271761 100644[m
+[1m--- a/hybrid_system/config.py[m
+[1m+++ b/hybrid_system/config.py[m
+[36m@@ -114,7 +114,7 @@[m [mclass RuntimeConfig:[m
+     max_frames: int | None = None[m
+     display: bool = True[m
+     display_backend: str = "auto"[m
+[31m-    fullscreen: bool = False[m
+[32m+[m[32m    fullscreen: bool = True[m
+     async_output: bool = False[m
+     kiosk_debug: bool = False[m
+     write_video: bool = True[m
+[1mdiff --git a/hybrid_system/configs/default.yaml b/hybrid_system/configs/default.yaml[m
+[1mindex 7fa4776..b292477 100644[m
+[1m--- a/hybrid_system/configs/default.yaml[m
+[1m+++ b/hybrid_system/configs/default.yaml[m
+[36m@@ -2,20 +2,20 @@[m [mthresholds:[m
+   eye_aspect_ratio: 0.22[m
+   mouth_aspect_ratio: 0.50[m
+   head_offset: 0.42[m
+[31m-  ear_zscore_threshold: -2.0[m
+[31m-  mar_zscore_threshold: 40.0[m
+[32m+[m[32m  ear_zscore_threshold: -2.5[m
+[32m+[m[32m  mar_zscore_threshold: 15.0[m
+   ear_trigger_frames: 30[m
+   pitch_trigger_frames: 15[m
+[31m-  pitch_upper: 0.1[m
+[31m-  pitch_lower: -0.1[m
+[32m+[m[32m  pitch_upper: 0.3[m
+[32m+[m[32m  pitch_lower: -0.3[m
+   phone_confidence: 0.45[m
+   phone_use_frames: 2[m
+   phone_hold_frames: 12[m
+   missing_face_frames: 50[m
+   eye_closed_frames: 8[m
+   drowsy_frames: 36[m
+[31m-  yawn_frames: 40[m
+[31m-  distracted_frames: 12[m
+[32m+[m[32m  yawn_frames: 10[m
+[32m+[m[32m  distracted_frames: 30[m
+   classification_threshold: 6[m
+   yaw_threshold: 0.25[m
+ [m
+[36m@@ -41,7 +41,7 @@[m [mobject_detector:[m
+   model_path: yolov8n.onnx[m
+   confidence_threshold: 0.25[m
+   iou_threshold: 0.45[m
+[31m-  process_every_n_frames: 10[m
+[32m+[m[32m  process_every_n_frames: 30[m
+   async_enabled: true[m
+   input_size: 640[m
+   phone_labels:[m
+[36m@@ -88,8 +88,8 @@[m [mruntime:[m
+   output_fps: null[m
+   max_frames: null[m
+   display: true[m
+[31m-  display_backend: opencv[m
+[31m-  fullscreen: false[m
+[32m+[m[32m  display_backend: auto[m
+[32m+[m[32m  fullscreen: true[m
+   async_output: false[m
+   kiosk_debug: false[m
+   write_video: true[m
+[1mdiff --git a/hybrid_system/display.py b/hybrid_system/display.py[m
+[1mindex 09272b3..5cc8768 100644[m
+[1m--- a/hybrid_system/display.py[m
+[1m+++ b/hybrid_system/display.py[m
+[36m@@ -519,13 +519,19 @@[m [mclass OpenCVDisplay:[m
+         self._size = size[m
+         self._fullscreen = fullscreen[m
+         self._fps = fps[m
+[32m+[m[32m        self._fullscreen_applied = False[m
+         cv2.namedWindow(self._title, cv2.WINDOW_NORMAL)[m
+         if fullscreen:[m
+[32m+[m[32m            cv2.moveWindow(self._title, 0, 0)[m
+             cv2.setWindowProperty(self._title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)[m
+[31m-        cv2.resizeWindow(self._title, size[0], size[1])[m
+[32m+[m[32m        else: cv2.resizeWindow(self._title, size[0], size[1])[m
+ [m
+     def show(self, frame: np.ndarray) -> None:[m
+         cv2.imshow(self._title, frame)[m
+[32m+[m[32m        if self._fullscreen and not self._fullscreen_applied:[m
+[32m+[m[32m            cv2.moveWindow(self._title, 0, 0)[m
+[32m+[m[32m            cv2.setWindowProperty(self._title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)[m
+[32m+[m[32m            self._fullscreen_applied = True[m
+ [m
+     def pump(self, fps: int = 60) -> bool:[m
+         delay = max(1, int(1000 / max(1, fps)))[m
+[1mdiff --git a/run_kiosk.py b/run_kiosk.py[m
+[1mindex 1046012..9897beb 100644[m
+[1m--- a/run_kiosk.py[m
+[1m+++ b/run_kiosk.py[m
+[36m@@ -29,6 +29,7 @@[m [mdef main() -> None:[m
+     parser.add_argument("--display-backend", type=str, help="Display backend: auto, sdl2, glfw, ffplay, opencv")[m
+     parser.add_argument("--debug-ui", action="store_true", help="Show normalized feature/debug values on kiosk UI")[m
+     parser.add_argument("--sync-output", action="store_true", help="Disable async render/display/write path")[m
+[32m+[m[32m    parser.add_argument("--windowed", action="store_true", help="Run kiosk in a normal window instead of fullscreen")[m
+     parser.add_argument("--no-phone", action="store_true", help="Disable phone detection")[m
+     parser.add_argument("--no-display", action="store_true", help="Run headless (logging only)")[m
+     parser.add_argument("--log-level", type=str, default="INFO",[m
+[36m@@ -56,6 +57,8 @@[m [mdef main() -> None:[m
+         config.runtime.kiosk_debug = True[m
+     if args.sync_output:[m
+         config.runtime.async_output = False[m
+[32m+[m[32m    if args.windowed:[m
+[32m+[m[32m        config.runtime.fullscreen = False[m
+     if args.no_phone:[m
+         config.runtime.phone_enabled = False[m
+         config.object_detector.enabled = False[m
+[36m@@ -72,4 +75,13 @@[m [mdef main() -> None:[m
+ [m
+ [m
+ if __name__ == "__main__":[m
+[32m+[m[32m    import warnings[m
+[32m+[m
+[32m+[m[32m    warnings.filterwarnings([m
+[32m+[m[32m        "ignore",[m
+[32m+[m[32m        message=r"SymbolDatabase\.GetPrototype\(\) is deprecated.*",[m
+[32m+[m[32m        category=UserWarning,[m
+[32m+[m[32m        module=r"google\.protobuf\.symbol_database",[m
+[32m+[m[32m    )[m
+     main()[m
+[41m+[m
+[1mdiff --git a/setup_pi.sh b/setup_pi.sh[m
+[1mold mode 100644[m
+[1mnew mode 100755[m

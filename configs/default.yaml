@@ -59,8 +59,8 @@ hardware:
 runtime:
   write_video: false
   display: true
-  display_backend: opencv
-  fullscreen: false
+  display_backend: auto
+  fullscreen: true
   async_output: false
   kiosk_debug: false
   phone_enabled: false

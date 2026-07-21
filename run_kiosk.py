@@ -29,6 +29,7 @@ def main() -> None:
     parser.add_argument("--display-backend", type=str, help="Display backend: auto, sdl2, glfw, ffplay, opencv")
     parser.add_argument("--debug-ui", action="store_true", help="Show normalized feature/debug values on kiosk UI")
     parser.add_argument("--sync-output", action="store_true", help="Disable async render/display/write path")
+    parser.add_argument("--windowed", action="store_true", help="Run kiosk in a normal window instead of fullscreen")
     parser.add_argument("--no-phone", action="store_true", help="Disable phone detection")
     parser.add_argument("--no-display", action="store_true", help="Run headless (logging only)")
     parser.add_argument("--log-level", type=str, default="INFO",
@@ -56,6 +57,8 @@ def main() -> None:
         config.runtime.kiosk_debug = True
     if args.sync_output:
         config.runtime.async_output = False
+    if args.windowed:
+        config.runtime.fullscreen = False
     if args.no_phone:
         config.runtime.phone_enabled = False
         config.object_detector.enabled = False
@@ -72,4 +75,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import warnings
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r"SymbolDatabase\.GetPrototype\(\) is deprecated.*",
+        category=UserWarning,
+        module=r"google\.protobuf\.symbol_database",
+    )
     main()
+

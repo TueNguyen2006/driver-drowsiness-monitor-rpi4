@@ -86,6 +86,7 @@ Common options:
 python3 run_kiosk.py --camera-index 0
 python3 run_kiosk.py --camera-fourcc MJPG
 python3 run_kiosk.py --debug-ui
+python3 run_kiosk.py --windowed
 python3 run_kiosk.py --no-phone
 python3 run_kiosk.py --no-display
 ```
@@ -178,6 +179,8 @@ phone_use > face_lost > drowsy > distracted > yawning
 ## Display
 
 The kiosk UI targets an 800x480 screen. Camera frames are scaled to cover the screen and center-cropped if the camera aspect ratio does not match 800x480. Landmarks use the same transform as the displayed frame so overlays stay aligned.
+
+`run_kiosk.py` starts fullscreen by default. Use `--windowed` only for desktop debugging when you want the normal window frame and title bar.
 
 Available display backends depend on installed packages and config:
 

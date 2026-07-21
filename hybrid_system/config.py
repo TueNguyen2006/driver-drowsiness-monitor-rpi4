@@ -114,7 +114,7 @@ class RuntimeConfig:
     max_frames: int | None = None
     display: bool = True
     display_backend: str = "auto"
-    fullscreen: bool = False
+    fullscreen: bool = True
     async_output: bool = False
     kiosk_debug: bool = False
     write_video: bool = True

@@ -20,7 +20,8 @@ __pycache__/
 .venv/
 venv/
 .env
-
+.pip-cache/
+.pip-tmp
 # Windows alternate data streams copied into WSL
 *:Zone.Identifier
 

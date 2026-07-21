@@ -519,13 +519,19 @@ class OpenCVDisplay:
         self._size = size
         self._fullscreen = fullscreen
         self._fps = fps
+        self._fullscreen_applied = False
         cv2.namedWindow(self._title, cv2.WINDOW_NORMAL)
         if fullscreen:
+            cv2.moveWindow(self._title, 0, 0)
             cv2.setWindowProperty(self._title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        cv2.resizeWindow(self._title, size[0], size[1])
+        else: cv2.resizeWindow(self._title, size[0], size[1])
 
     def show(self, frame: np.ndarray) -> None:
         cv2.imshow(self._title, frame)
+        if self._fullscreen and not self._fullscreen_applied:
+            cv2.moveWindow(self._title, 0, 0)
+            cv2.setWindowProperty(self._title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            self._fullscreen_applied = True
 
     def pump(self, fps: int = 60) -> bool:
         delay = max(1, int(1000 / max(1, fps)))
