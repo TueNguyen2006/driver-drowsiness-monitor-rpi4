@@ -1,197 +1,252 @@
 # Driver Drowsiness Monitor for Raspberry Pi 4
 
-Real-time drowsiness detection system using USB camera, running on Raspberry Pi 4.
+Real-time driver monitoring kiosk for Raspberry Pi 4 and Linux/WSL development. The system uses a webcam, MediaPipe facial landmarks, head-pose estimation, an LSTM drowsiness classifier, phone detection, GPIO controls, and Vietnamese WAV voice alerts.
 
-This project implements a comprehensive driver drowsiness monitoring system that can detect when drivers are becoming drowsy or distracted based on facial features, head pose and mouth movements. The system includes hardware integration with LEDs, buttons and audio alerts for real-time feedback.
+The main production entry point is `run_kiosk.py`.
 
-## Key Features
+## Features
 
-- Face calibration before inference
-- Detection of `normal` or `drowsy` states based on eye, mouth, and head angle features  
-- Hardware control with 2 GPIO buttons:
-  - Button `restart calibration`
-  - Button `pause/resume inference`
-- Hardware alerts:
-  - Status LEDs
-  - Voice notifications in Vietnamese
-  - Alarm buzzer when drowsiness is detected
+- 800x480 kiosk UI for embedded screens.
+- Webcam-based face landmark tracking.
+- Startup calibration with strict stability checks.
+- Drowsiness scoring from normalized facial features and the LSTM classifier.
+- Yawning detection from calibrated MAR.
+- Distraction detection from calibrated head pose.
+- Phone-use detection with YOLO/ONNX object detection.
+- Optional debug UI with normalized EAR, MAR, PUC, MoE, head pose, and LSTM output.
+- GPIO LEDs and buttons for Raspberry Pi deployment.
+- Pygame-based audio worker using local WAV assets only.
+- Session reports and optional video recording.
 
-## Hardware Connections
+## Repository Layout
 
-Current setup uses:
-- Calibration LED: physical pin `3`, GPIO BCM `2`
-- Inference LED: physical pin `5`, GPIO BCM `3` 
-- Restart button: physical pin `8`, GPIO BCM `14`
-- Pause/Resume button: physical pin `10`, GPIO BCM `15`
-- Camera: USB
-- Speaker/Audio: 3.5mm jack
+- `run_kiosk.py`: main kiosk entry point.
+- `hybrid_system/`: hybrid detection, calibration, UI, display, audio, and reporting pipeline.
+- `hybrid_system/configs/default.yaml`: default kiosk configuration.
+- `assets/audio/`: bundled WAV prompts and alert sounds used at runtime.
+- `models/`: MediaPipe, head-pose, and drowsiness models.
+- `tools/`: local utility scripts, including audio tests and asset preparation.
+- `tests/`: focused tests for the current pipeline.
+- `setup_pi.sh`: Raspberry Pi setup helper.
 
-Recommended wiring:
-- Each LED through a `220-330 ohm` resistor
-- Buttons connected to GPIO and GND (uses internal pull-up, so pressed state is LOW)
-
-**Notes:**
-- `GPIO14` and `GPIO15` are by default used for UART. If using these pins as buttons, disable serial console on Raspberry Pi OS.
-- `GPIO2` and `GPIO3` are by default used for I2C. If not using I2C, you can use them as LEDs.
-
-## System Requirements
+## Requirements
 
 Recommended:
-- Raspberry Pi OS 64-bit
-- Python `3.10` or `3.11`
 
-Important:
-- `mediapipe` and `torch` on Raspberry Pi depend on wheels compatible with the OS and Python version.
-- Use Raspberry Pi OS 64-bit to reduce installation issues.
+- Raspberry Pi OS 64-bit or Ubuntu/WSL for development.
+- Python 3.10 or 3.11.
+- USB camera exposed as `/dev/video0` or another V4L2 device.
+- Speaker supported by ALSA/PulseAudio.
 
-## Clone and Setup
+Install system packages:
 
 ```bash
-git clone https://github.com/TueNguyen2006/driver-drowsiness-monitor-rpi4.git
-cd driver-drowsiness-monitor-rpi4
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip python3-opencv alsa-utils libatlas-base-dev
+```
+
+Install Python packages:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip setuptools wheel
-sudo apt update
-sudo apt install -y espeak-ng alsa-utils libatlas-base-dev
 pip install -r requirements.txt
 ```
 
-Or run the quick setup script:
+Or use the Raspberry Pi setup script:
 
 ```bash
 chmod +x setup_pi.sh
 ./setup_pi.sh
 ```
 
-If `pip install -r requirements.txt` fails with `torch` or `mediapipe`:
-- Keep other packages as they are
-- Install the correct wheel compatible with Pi OS and Python version 
-- Then run the program again
+## Running Kiosk Mode
 
-## Key Files
-
-- `main.py`: main real-time pipeline
-- `hardware.py`: GPIO LEDs, buttons, speaker, buzzer controls  
-- `config.py`: camera, GPIO, audio configurations
-- `models/`: head pose and drowsiness detection models
-- `Arduino/`: legacy Arduino code (no longer required when running on Pi)
-
-## Running the Program
+From the repo root:
 
 ```bash
 source .venv/bin/activate
-python main.py
+python3 run_kiosk.py
 ```
 
-When running:
-- `calibrate`: GPIO LED `2` turns on
-- `infer`: GPIO LED `3` turns on  
-- `infer_paused`: both LEDs turn on
-
-Audio feedback:
-- Press restart button: "Running calibration process"
-- Calibration complete: "Calibration process completed" 
-- Start inference: "Have a safe journey"
-- When drowsiness is stable: audio alarm will trigger
-
-## Quick Configuration with Environment Variables
-
-You can override default configurations:
+Common options:
 
 ```bash
-export CAMERA_INDEX=0
-export LED_CALIBRATION_PIN=2
-export LED_INFERENCE_PIN=3
-export BUTTON_RESTART_PIN=14
-export BUTTON_PAUSE_PIN=15
-export TTS_VOICE=vi
-export TTS_RATE=150
+python3 run_kiosk.py --camera-index 0
+python3 run_kiosk.py --camera-fourcc MJPG
+python3 run_kiosk.py --debug-ui
+python3 run_kiosk.py --no-phone
+python3 run_kiosk.py --no-display
 ```
 
-Other available variables:
-- `GPIO_DEBOUNCE_MS`
-- `ALERT_BEEP_FREQUENCY`
-- `ALERT_BEEP_DURATION` 
-- `ALERT_BEEP_INTERVAL`
-- `ALERT_HOLD_SECONDS`
-- `ALERT_STABLE_SECONDS`
+For WSL from Windows PowerShell:
 
-## Disable Serial Console to Use GPIO14/GPIO15
+```powershell
+wsl -d Ubuntu-22.04 --cd /home/tuenguyen/driver-drowsiness-monitor-rpi4
+source .venv/bin/activate
+python3 run_kiosk.py --camera-index 0
+```
 
-Run:
+If the camera is attached from Windows to WSL with `usbipd`, run the attach step from Windows first:
+
+```powershell
+usbipd list
+usbipd bind --busid <BUSID>
+usbipd attach --wsl Ubuntu-22.04 --busid <BUSID>
+```
+
+Then verify inside WSL:
 
 ```bash
-sudo raspi-config
+ls -l /dev/video*
 ```
 
-Navigate to:
-- `Interface Options` → `Serial Port`  
-- Choose `No` for login shell over serial
-- Choose `No` or `Yes` for serial hardware depending on your needs
+## Audio
 
-Then reboot:
+Audio no longer uses `espeak-ng`, `ffplay`, temporary WAV files, or subprocess playback.
+
+Runtime audio uses only WAV files from:
+
+```text
+assets/audio/
+```
+
+The audio implementation:
+
+- initializes `pygame.mixer` once when kiosk starts;
+- preloads WAV files into memory;
+- uses one worker thread and one voice queue;
+- uses separate mixer channels for voice and alert beep;
+- avoids overlapping voice prompts;
+- applies cooldowns so repeated detector states do not spam speech;
+- logs a warning and continues if a WAV file is missing;
+- shuts down the worker, channels, and mixer when kiosk exits.
+
+Test audio without a real audio device:
 
 ```bash
-sudo reboot
+SDL_AUDIODRIVER=dummy .venv/bin/python -m unittest tests.test_hardware_audio
 ```
 
-## Auto-start After Boot
+Play a sample prompt:
 
-The repo includes a sample service file `drowsiness-monitor.service.example`.
-
-You can use systemd. Example service configuration:
-
-```ini
-[Unit]
-Description=Drowsiness Monitor
-After=network.target sound.target
-
-[Service]
-User=pi
-WorkingDirectory=%h/driver-drowsiness-monitor-rpi4
-Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/driver-drowsiness-monitor-rpi4/.venv/bin/python run_kiosk.py
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Save to:
 ```bash
-sudo nano /etc/systemd/system/drowsiness-monitor.service
+.venv/bin/python tools/play_audio_sample.py "Hệ thống đã sẵn sàng.wav"
 ```
 
-Enable and start the service:
+## Calibration
+
+At startup, kiosk plays the calibration preparation prompt first. Calibration starts only after that prompt finishes.
+
+Calibration requires stable face samples:
+
+- `ear_std_max: 0.01`
+- `mar_std_max: 0.02`
+- `pose_std_max: 0.08`
+- `frame_count: 100`
+
+If calibration times out, the kiosk falls back safely and continues into inference instead of freezing the display.
+
+## Alert Conditions
+
+Default trigger values are configured in `hybrid_system/configs/default.yaml`.
+
+- `drowsy`: LSTM drowsiness classification held for `36` frames.
+- `yawning`: calibrated MAR threshold held for `40` frames.
+- `distracted`: calibrated head-pose deviation held for `12` frames.
+- `phone_use`: phone detection held after object detector confirmation.
+- `face_lost`: no visible face for `50` consecutive frames.
+- `eyes_closed`: kept as a visual/internal signal and does not directly trigger TTS.
+
+Voice alert priority:
+
+```text
+phone_use > face_lost > drowsy > distracted > yawning
+```
+
+## Display
+
+The kiosk UI targets an 800x480 screen. Camera frames are scaled to cover the screen and center-cropped if the camera aspect ratio does not match 800x480. Landmarks use the same transform as the displayed frame so overlays stay aligned.
+
+Available display backends depend on installed packages and config:
+
 ```bash
+python3 run_kiosk.py --display-backend opencv
+python3 run_kiosk.py --display-backend auto
+```
+
+`ffplay` may exist as an optional video display backend only. It is not used for audio.
+
+## Raspberry Pi Hardware
+
+Default GPIO mapping:
+
+- Calibration LED: BCM `2`, physical pin `3`.
+- Inference LED: BCM `3`, physical pin `5`.
+- Restart calibration button: BCM `14`, physical pin `8`.
+- Pause/resume button: BCM `15`, physical pin `10`.
+
+Recommended wiring:
+
+- Use a `220-330 ohm` resistor for each LED.
+- Buttons connect GPIO to GND and use internal pull-up.
+
+Notes:
+
+- GPIO14/GPIO15 are UART pins by default. Disable serial console if using them as buttons.
+- GPIO2/GPIO3 are I2C pins by default. Use different pins if I2C is needed.
+
+## Systemd Autostart
+
+The repository includes `drowsiness-monitor.service.example`.
+
+Example commands:
+
+```bash
+sudo cp drowsiness-monitor.service.example /etc/systemd/system/drowsiness-monitor.service
 sudo systemctl daemon-reload
 sudo systemctl enable drowsiness-monitor.service
 sudo systemctl start drowsiness-monitor.service
 sudo systemctl status drowsiness-monitor.service
 ```
 
-## Deployment Notes
+## Troubleshooting
 
-- USB camera must be recognized by the OS as `/dev/video0` or appropriate camera index.
-- If 3.5mm speaker doesn't play audio, check audio output:
+Camera not opening:
+
+```bash
+ls -l /dev/video*
+v4l2-ctl --list-devices
+python3 run_kiosk.py --camera-index 0 --camera-fourcc MJPG
+```
+
+Audio not playing:
+
 ```bash
 aplay -l
 speaker-test -t sine -f 1000 -c 2
+.venv/bin/python tools/play_audio_sample.py "Hệ thống đã sẵn sàng.wav"
 ```
 
-To select 3.5mm output:
+OpenCV Qt font warnings such as `QFontDatabase: Cannot find font directory` are usually harmless. They come from OpenCV's Qt window backend and do not indicate a camera or detection failure.
+
+## Tests
+
+Run focused checks:
+
 ```bash
-amixer cset numid=3 1
+SDL_AUDIODRIVER=dummy .venv/bin/python -m unittest tests.test_hardware_audio
+.venv/bin/python -m py_compile run_kiosk.py hybrid_system/config.py hybrid_system/kiosk.py hybrid_system/ui.py
 ```
 
-## Future Development
+Run benchmarks:
 
-- Add systemd files directly to repository 
-- Log to file instead of just displaying OpenCV window
-- Add watchdog for camera/audio devices to auto-recover when devices are unplugged
+```bash
+.venv/bin/python bench_pipeline.py
+.venv/bin/python bench_async_output.py
+```
 
 ## Acknowledgements
 
-This system uses MediaPipe for face detection and landmark estimation, along with custom deep learning models for drowsiness detection based on head pose analysis.
+This project uses MediaPipe for face landmarks, Ultralytics/YOLO-style object detection for phone use, and a head-pose estimator based on the landmark ordering used by Mostafa Nafie's Head-Pose-Estimation project.

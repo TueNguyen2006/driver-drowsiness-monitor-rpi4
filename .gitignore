@@ -20,3 +20,10 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Windows alternate data streams copied into WSL
+*:Zone.Identifier
+
+# Local Codex/agent workspace metadata
+.agents/
+AGENTS.md

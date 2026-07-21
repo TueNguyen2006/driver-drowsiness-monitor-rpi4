@@ -49,6 +49,7 @@ class ObjectObservation:
 class ObjectDetector:
     __slots__ = (
         "enabled", "confidence_threshold", "iou_threshold",
+        "input_size",
         "phone_labels", "_session", "_input_name",
         "_model", "_provider", "_frame_count",
     )
@@ -59,11 +60,13 @@ class ObjectDetector:
         model_path: str = "",
         confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
+        input_size: int = 640,
         phone_labels: list[str] | None = None,
     ) -> None:
         self.enabled = enabled
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
+        self.input_size = max(160, int(input_size))
         self.phone_labels = phone_labels or ["cell phone", "phone", "mobile"]
         self._session = None
         self._input_name = ""
@@ -115,7 +118,7 @@ class ObjectDetector:
         return []
 
     def _detect_onnx(self, frame: np.ndarray) -> list[ObjectObservation]:
-        input_size = 640
+        input_size = self.input_size
         resized, scale, pad_x, pad_y = _letterbox(frame, input_size, input_size)
         blob = cv2.dnn.blobFromImage(resized, 1 / 255.0, (input_size, input_size), swapRB=True, crop=False)
         self._model.setInput(blob)
@@ -179,7 +182,7 @@ class ObjectDetector:
             verbose=False,
             device="cpu",
             half=False,
-            imgsz=640,
+            imgsz=self.input_size,
         )[0]
         observations: list[ObjectObservation] = []
         if results.boxes is None:

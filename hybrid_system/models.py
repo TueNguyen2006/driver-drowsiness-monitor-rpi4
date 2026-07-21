@@ -54,6 +54,7 @@ class ProcessedFrame:
     landmarks: list[tuple[float, float]] = field(default_factory=list)
     objects: list[dict[str, Any]] = field(default_factory=list)
     head_pose: tuple[float, float, float] | None = None
+    debug_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

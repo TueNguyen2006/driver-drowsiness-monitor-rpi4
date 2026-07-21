@@ -9,6 +9,9 @@ import numpy as np
 
 @dataclass
 class CalibrationParams:
+    MAR_NORMALIZED_MIN = -2.0
+    PUC_NORMALIZED_MAX = 6.0
+
     ear_mean: float = 0.3
     ear_std: float = 0.05
     mar_mean: float = 0.3
@@ -75,10 +78,10 @@ class CalibrationParams:
         return (ear - self.ear_mean) / self.ear_std
 
     def normalize_mar(self, mar: float) -> float:
-        return (mar - self.mar_mean) / self.mar_std
+        return max(self.MAR_NORMALIZED_MIN, (mar - self.mar_mean) / self.mar_std)
 
     def normalize_puc(self, puc: float) -> float:
-        return (puc - self.puc_mean) / self.puc_std
+        return min(self.PUC_NORMALIZED_MAX, (puc - self.puc_mean) / self.puc_std)
 
     def normalize_moe(self, moe: float) -> float:
         return (moe - self.moe_mean) / self.moe_std
@@ -119,6 +122,8 @@ class SmartCalibrator:
         self._ear_std_max = ear_std_max
         self._mar_std_max = mar_std_max
         self._pose_std_max = pose_std_max
+        self._fallback_samples: list[tuple[float, ...]] = []
+        self._lock = threading.Lock()
         self._queue: queue.Queue[tuple[float, ...]] = queue.Queue(maxsize=500)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._running = True
@@ -142,6 +147,8 @@ class SmartCalibrator:
                 sample = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            if self._params.calibrated:
+                continue
 
             window.append(sample)
             max_win = max(self._max, self._stable_window_size * 2, 60)
@@ -157,6 +164,10 @@ class SmartCalibrator:
             if abs(pitch) > self._max_abs_pitch or abs(yaw) > self._max_abs_yaw or abs(_roll) > self._max_abs_roll:
                 continue
 
+            self._fallback_samples.append(sample)
+            if len(self._fallback_samples) > self._max:
+                self._fallback_samples = self._fallback_samples[-self._max:]
+
             if len(window) >= self._stable_window_size:
                 recent = window[-self._stable_window_size:]
                 ears = np.array([s[0] for s in recent])
@@ -171,16 +182,33 @@ class SmartCalibrator:
                 if max(np.std(pitches), np.std(yaws), np.std(rolls)) > self._pose_std_max:
                     continue
 
-            self._params.add_sample(ear, mar, _puc, _moe, pitch, yaw, _roll)
-            self._good_frames += 1
-            if self._good_frames >= self._min and not self._params.calibrated:
-                self._params.compute()
-            elif self._good_frames >= self._max and not self._params.calibrated:
-                self._params.compute()
+            with self._lock:
+                self._params.add_sample(ear, mar, _puc, _moe, pitch, yaw, _roll)
+                self._good_frames += 1
+                if self._good_frames >= self._min and not self._params.calibrated:
+                    self._params.compute()
+                elif self._good_frames >= self._max and not self._params.calibrated:
+                    self._params.compute()
 
     def force_defaults(self) -> None:
-        if not self._params.calibrated:
+        with self._lock:
+            if not self._params.calibrated:
+                self._params.calibrated = True
+
+    def force_compute_or_defaults(self) -> bool:
+        with self._lock:
+            if self._params.calibrated:
+                return True
+            if self._params.ear_buffer:
+                self._params.compute()
+                return True
+            if self._fallback_samples:
+                for sample in self._fallback_samples:
+                    self._params.add_sample(*sample)
+                self._params.compute()
+                return True
             self._params.calibrated = True
+            return False
 
     def stop(self) -> None:
         self._running = False

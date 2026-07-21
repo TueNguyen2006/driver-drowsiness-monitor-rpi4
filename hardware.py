@@ -1,24 +1,37 @@
-import math
+from __future__ import annotations
+
+import logging
 import os
 import queue
-import shutil
-import struct
-import subprocess
-import tempfile
 import threading
 import time
-import wave
+from pathlib import Path
+from typing import Any
 
 import config as cfg
 import state
 
 try:
     import RPi.GPIO as GPIO
-except ImportError:
+except (ImportError, RuntimeError):
     GPIO = None
 
 
+log = logging.getLogger(__name__)
+
+
 class HardwareController:
+    VOICE_CHANNEL = 0
+    ALERT_CHANNEL = 1
+    ALERT_BEEP_FILE = "alert_beep.wav"
+    MIXER_FREQUENCY = 48000
+    MIXER_SIZE = -16
+    MIXER_CHANNELS = 2
+    MIXER_BUFFER = 16384
+    PULSE_LATENCY_MSEC = "120"
+    VOICE_VOLUME = 0.50
+    ALERT_VOLUME = 0.75
+
     def __init__(self):
         self.gpio_available = GPIO is not None
         self.stop_event = threading.Event()
@@ -26,18 +39,22 @@ class HardwareController:
         self.audio_thread = None
         self.status_thread = None
         self.button_thread = None
-        self.audio_lock = threading.Lock()
-        self.alert_beep_path = None
         self.last_restart_press = 0.0
         self.last_pause_press = 0.0
         self.last_announced_text = {}
-        self._speech_cmd = self._resolve_speech_command()
-        self._audio_player_cmd = self._resolve_audio_player()
+        self.audio_dir = Path(__file__).resolve().parent / "assets" / "audio"
+        self._pygame: Any | None = None
+        self._mixer_ready = False
+        self._sound_cache: dict[str, Any] = {}
+        self._missing_audio: set[str] = set()
+        self._voice_channel: Any | None = None
+        self._alert_channel: Any | None = None
 
     def start(self):
         if self.gpio_available:
             self._setup_gpio()
 
+        self._init_audio()
         self.audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
         self.audio_thread.start()
 
@@ -50,6 +67,17 @@ class HardwareController:
 
     def cleanup(self):
         self.stop_event.set()
+        try:
+            self.audio_queue.put_nowait(("stop", None))
+        except queue.Full:
+            pass
+
+        if self.audio_thread and self.audio_thread.is_alive():
+            self.audio_thread.join(timeout=1.0)
+        if self.status_thread and self.status_thread.is_alive():
+            self.status_thread.join(timeout=1.0)
+        if self.button_thread and self.button_thread.is_alive():
+            self.button_thread.join(timeout=1.0)
 
         if self.gpio_available:
             try:
@@ -59,25 +87,31 @@ class HardwareController:
             except Exception:
                 pass
 
-        if self.alert_beep_path and os.path.exists(self.alert_beep_path):
-            try:
-                os.remove(self.alert_beep_path)
-            except OSError:
-                pass
+        self._shutdown_audio()
 
     def announce_recalibration_requested(self):
-        self.speak_async("Chạy quá trình hiệu chuẩn")
+        self.speak_async("Vui lòng nhìn về phía trước")
 
     def announce_calibration_complete(self):
-        self.speak_async("Hoàn thành quá trình hiệu chuẩn")
+        self.speak_async("Hệ thống đã sẵn sàng")
 
     def announce_infer_started(self):
         self.speak_async("Chúc bạn có một chuyến đi vui vẻ")
 
+    def speak(self, text, cooldown=0.0):
+        self.queue_speech(text, cooldown=cooldown)
+
     def speak_async(self, text, dedupe_window=0.0):
+        self.queue_speech(text, cooldown=dedupe_window)
+
+    def queue_speech(self, text, cooldown=0.0):
+        text = (text or "").strip()
+        if not text:
+            return
+
         now = time.monotonic()
         last_spoken = self.last_announced_text.get(text, 0.0)
-        if dedupe_window and now - last_spoken < dedupe_window:
+        if cooldown and now - last_spoken < cooldown:
             return
 
         self.last_announced_text[text] = now
@@ -158,6 +192,61 @@ class HardwareController:
         GPIO.output(cfg.LED_CALIBRATION_PIN, GPIO.HIGH if calibration_led_on else GPIO.LOW)
         GPIO.output(cfg.LED_INFERENCE_PIN, GPIO.HIGH if infer_led_on else GPIO.LOW)
 
+    def _init_audio(self):
+        if self._mixer_ready:
+            return
+        try:
+            os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+            if os.environ.get("PULSE_SERVER"):
+                os.environ.setdefault("PULSE_LATENCY_MSEC", self.PULSE_LATENCY_MSEC)
+            if os.environ.get("PULSE_SERVER") and not os.environ.get("SDL_AUDIODRIVER"):
+                os.environ["SDL_AUDIODRIVER"] = "pulseaudio"
+            import pygame
+
+            if not pygame.mixer.get_init():
+                pygame.mixer.pre_init(
+                    frequency=self.MIXER_FREQUENCY,
+                    size=self.MIXER_SIZE,
+                    channels=self.MIXER_CHANNELS,
+                    buffer=self.MIXER_BUFFER,
+                    allowedchanges=0,
+                )
+                pygame.mixer.init(
+                    frequency=self.MIXER_FREQUENCY,
+                    size=self.MIXER_SIZE,
+                    channels=self.MIXER_CHANNELS,
+                    buffer=self.MIXER_BUFFER,
+                    allowedchanges=0,
+                )
+            mixer_spec = pygame.mixer.get_init()
+            if mixer_spec != (self.MIXER_FREQUENCY, self.MIXER_SIZE, self.MIXER_CHANNELS):
+                log.warning("Unexpected pygame mixer format: %s", mixer_spec)
+            pygame.mixer.set_num_channels(max(8, pygame.mixer.get_num_channels()))
+            self._pygame = pygame
+            self._voice_channel = pygame.mixer.Channel(self.VOICE_CHANNEL)
+            self._alert_channel = pygame.mixer.Channel(self.ALERT_CHANNEL)
+            self._mixer_ready = True
+            self._preload_audio()
+        except Exception as exc:
+            self._mixer_ready = False
+            log.warning("Audio disabled: pygame.mixer init failed: %s", exc)
+
+    def _preload_audio(self):
+        if not self._mixer_ready or self._pygame is None:
+            return
+        if not self.audio_dir.exists():
+            log.warning("Audio directory not found: %s", self.audio_dir)
+            return
+        for path in sorted(self.audio_dir.glob("*.wav")):
+            try:
+                sound = self._pygame.mixer.Sound(str(path))
+            except Exception as exc:
+                log.warning("Cannot load audio file %s: %s", path, exc)
+                continue
+            self._sound_cache[path.name] = sound
+            self._sound_cache[path.stem] = sound
+        log.info("Preloaded %d audio files from %s", len(self._sound_cache) // 2, self.audio_dir)
+
     def _audio_worker(self):
         while not self.stop_event.is_set():
             try:
@@ -166,104 +255,62 @@ class HardwareController:
                 continue
 
             try:
-                if event_type == "speak":
-                    self._speak_blocking(payload)
+                if event_type == "stop":
+                    return
+                if event_type == "speak" and payload:
+                    self._play_voice(payload)
                 elif event_type == "beep":
                     self._play_alert_beep()
             finally:
                 self.audio_queue.task_done()
 
-    def _resolve_speech_command(self):
-        for command in ("espeak-ng", "espeak"):
-            command_path = shutil.which(command)
-            if command_path:
-                return command_path
-        return None
-
-    def _resolve_audio_player(self):
-        for command in ("aplay", "paplay", "ffplay"):
-            command_path = shutil.which(command)
-            if command_path:
-                return command_path
-        return None
-
-    def _speak_blocking(self, text):
-        if not self._speech_cmd:
+    def _play_voice(self, text):
+        sound = self._sound_for_text(text)
+        if sound is None or self._voice_channel is None:
             return
-
-        command = [self._speech_cmd, "-s", str(cfg.TTS_RATE)]
-        if cfg.TTS_VOICE:
-            command.extend(["-v", cfg.TTS_VOICE])
-        command.append(text)
-
-        with self.audio_lock:
-            subprocess.run(
-                command,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        while self._voice_channel.get_busy() and not self.stop_event.is_set():
+            time.sleep(0.02)
+        if self.stop_event.is_set():
+            return
+        self._voice_channel.set_volume(self.VOICE_VOLUME)
+        self._voice_channel.play(sound)
+        while self._voice_channel.get_busy() and not self.stop_event.is_set():
+            time.sleep(0.02)
 
     def _play_alert_beep(self):
-        if not self._audio_player_cmd:
+        sound = self._sound_for_file(self.ALERT_BEEP_FILE)
+        if sound is None or self._alert_channel is None:
             return
+        if not self._alert_channel.get_busy():
+            self._alert_channel.set_volume(self.ALERT_VOLUME)
+            self._alert_channel.play(sound)
 
-        beep_path = self._ensure_alert_beep_file()
-        if beep_path is None:
+    def _sound_for_text(self, text):
+        return self._sound_for_file(f"{text}.wav")
+
+    def _sound_for_file(self, filename):
+        if not self._mixer_ready:
+            return None
+        sound = self._sound_cache.get(filename)
+        if sound is not None:
+            return sound
+        if filename not in self._missing_audio:
+            self._missing_audio.add(filename)
+            log.warning("Audio file missing, skipping playback: %s", self.audio_dir / filename)
+        return None
+
+    def _shutdown_audio(self):
+        if self._pygame is None:
             return
-
-        player_name = os.path.basename(self._audio_player_cmd)
-        if player_name == "aplay":
-            command = [self._audio_player_cmd, "-q", beep_path]
-        elif player_name == "paplay":
-            command = [self._audio_player_cmd, beep_path]
-        else:
-            command = [
-                self._audio_player_cmd,
-                "-nodisp",
-                "-autoexit",
-                "-loglevel",
-                "quiet",
-                beep_path,
-            ]
-
-        with self.audio_lock:
-            subprocess.run(
-                command,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-    def _ensure_alert_beep_file(self):
-        if self.alert_beep_path and os.path.exists(self.alert_beep_path):
-            return self.alert_beep_path
-
-        sample_rate = 22050
-        amplitude = 16000
-        beep_duration = max(0.1, cfg.ALERT_BEEP_DURATION / 2.0)
-        silence_duration = 0.08
-        sequence = [(cfg.ALERT_BEEP_FREQUENCY, beep_duration), (0, silence_duration), (cfg.ALERT_BEEP_FREQUENCY, beep_duration)]
-
-        fd, path = tempfile.mkstemp(prefix="drowsy_alert_", suffix=".wav")
-        os.close(fd)
-
-        with wave.open(path, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-
-            for frequency, duration in sequence:
-                frame_count = int(sample_rate * duration)
-                for frame_index in range(frame_count):
-                    if frequency == 0:
-                        sample = 0
-                    else:
-                        sample = int(
-                            amplitude
-                            * math.sin(2.0 * math.pi * frequency * frame_index / sample_rate)
-                        )
-                    wav_file.writeframesraw(struct.pack("<h", sample))
-
-        self.alert_beep_path = path
-        return self.alert_beep_path
+        try:
+            if self._voice_channel is not None:
+                self._voice_channel.stop()
+            if self._alert_channel is not None:
+                self._alert_channel.stop()
+            self._pygame.mixer.quit()
+        except Exception:
+            pass
+        finally:
+            self._mixer_ready = False
+            self._voice_channel = None
+            self._alert_channel = None

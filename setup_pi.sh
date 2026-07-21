@@ -17,7 +17,6 @@ sudo apt install -y \
   python3-venv \
   python3-pip \
   python3-opencv \
-  espeak-ng \
   alsa-utils \
   libatlas-base-dev \
   libhdf5-dev \

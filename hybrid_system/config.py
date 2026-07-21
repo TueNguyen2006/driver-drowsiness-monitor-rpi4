@@ -17,18 +17,18 @@ class ThresholdConfig:
     mouth_aspect_ratio: float = 0.50
     head_offset: float = 0.42
     ear_zscore_threshold: float = -2.0
-    mar_zscore_threshold: float = 30.0
+    mar_zscore_threshold: float = 40.0
     ear_trigger_frames: int = 30
     pitch_trigger_frames: int = 15
-    pitch_upper: float = 0.3
-    pitch_lower: float = -0.2
+    pitch_upper: float = 0.1
+    pitch_lower: float = -0.1
     phone_confidence: float = 0.45
     phone_use_frames: int = 2
     phone_hold_frames: int = 12
-    missing_face_frames: int = 8
+    missing_face_frames: int = 50
     eye_closed_frames: int = 8
     drowsy_frames: int = 36
-    yawn_frames: int = 6
+    yawn_frames: int = 40
     distracted_frames: int = 12
     classification_threshold: int = 6
     yaw_threshold: float = 0.25
@@ -41,7 +41,13 @@ class VisionConfig:
     fallback_to_haar: bool = True
     process_every_n_frames: int = 2
     draw_landmarks: bool = True
+    overlay_landmark_mode: str = "minimal"
+    async_landmarks: bool = False
     camera_index: int = 0
+    camera_fourcc: str = "MJPG"
+    camera_width: int = 640
+    camera_height: int = 480
+    camera_fps: float = 30.0
     process_width: int = 0
     process_height: int = 0
 
@@ -53,6 +59,9 @@ class ObjectDetectorConfig:
     model_path: str = "yolov8n.onnx"
     confidence_threshold: float = 0.25
     iou_threshold: float = 0.45
+    process_every_n_frames: int = 10
+    async_enabled: bool = True
+    input_size: int = 640
     phone_labels: list[str] = field(default_factory=lambda: ["cell phone", "phone", "mobile"])
 
 
@@ -93,7 +102,7 @@ class HardwareConfig:
     button_pause_pin: int = 15
     beep_frequency: int = 1850
     beep_duration: float = 0.45
-    beep_interval: float = 1.75
+    beep_interval: float = 6.0
     alert_hold_seconds: float = 2.5
     alert_stable_seconds: float = 1.2
     alsa_device: str = ""
@@ -104,9 +113,17 @@ class RuntimeConfig:
     output_fps: float | None = None
     max_frames: int | None = None
     display: bool = True
+    display_backend: str = "auto"
+    fullscreen: bool = False
+    async_output: bool = False
+    kiosk_debug: bool = False
     write_video: bool = True
     phone_enabled: bool = True
     alert_cooldown_seconds: float = 2.0
+    alert_voice_global_cooldown_seconds: float = 8.0
+    alert_voice_repeat_cooldown_seconds: float = 24.0
+    alert_voice_switch_cooldown_seconds: float = 4.0
+    profile_interval_frames: int = 300
 
 
 @dataclass(slots=True)

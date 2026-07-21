@@ -18,7 +18,9 @@ class HeadPoseEstimator:
     CHIN = 199
     LEFT_EYE = 33
     RIGHT_EYE = 263
-    KEY_ORDER = [FOREHEAD, NOSE, MOUTH_LEFT, MOUTH_RIGHT, CHIN, LEFT_EYE, RIGHT_EYE]
+    # Must match the training notebook column order:
+    # nose, forehead, left_eye, mouth_left, chin, right_eye, mouth_right.
+    KEY_ORDER = [NOSE, FOREHEAD, LEFT_EYE, MOUTH_LEFT, CHIN, RIGHT_EYE, MOUTH_RIGHT]
 
     def __init__(self, model_path: str | Path) -> None:
         self.model = None

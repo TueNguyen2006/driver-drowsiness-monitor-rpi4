@@ -3,18 +3,18 @@ thresholds:
   mouth_aspect_ratio: 0.50
   head_offset: 0.42
   ear_zscore_threshold: -2.0
-  mar_zscore_threshold: 3.0
+  mar_zscore_threshold: 40.0
   ear_trigger_frames: 30
   pitch_trigger_frames: 15
-  pitch_upper: 0.3
-  pitch_lower: -0.2
+  pitch_upper: 0.1
+  pitch_lower: -0.1
   phone_confidence: 0.45
   phone_use_frames: 2
   phone_hold_frames: 12
-  missing_face_frames: 8
+  missing_face_frames: 50
   eye_closed_frames: 8
   drowsy_frames: 36
-  yawn_frames: 6
+  yawn_frames: 40
   distracted_frames: 12
   classification_threshold: 6
   yaw_threshold: 0.25
@@ -25,7 +25,13 @@ vision:
   fallback_to_haar: true
   process_every_n_frames: 2
   draw_landmarks: true
+  overlay_landmark_mode: minimal
+  async_landmarks: false
   camera_index: 0
+  camera_fourcc: MJPG
+  camera_width: 640
+  camera_height: 480
+  camera_fps: 30.0
   process_width: 640
   process_height: 480
 
@@ -35,6 +41,9 @@ object_detector:
   model_path: yolov8n.onnx
   confidence_threshold: 0.25
   iou_threshold: 0.45
+  process_every_n_frames: 10
+  async_enabled: true
+  input_size: 640
   phone_labels:
     - cell phone
     - mobile phone
@@ -70,7 +79,7 @@ hardware:
   button_pause_pin: 15
   beep_frequency: 1850
   beep_duration: 0.45
-  beep_interval: 1.75
+  beep_interval: 6.0
   alert_hold_seconds: 2.5
   alert_stable_seconds: 1.2
   alsa_device: ""
@@ -79,8 +88,16 @@ runtime:
   output_fps: null
   max_frames: null
   display: true
+  display_backend: opencv
+  fullscreen: false
+  async_output: false
+  kiosk_debug: false
   write_video: true
   alert_cooldown_seconds: 2.0
+  alert_voice_global_cooldown_seconds: 8.0
+  alert_voice_repeat_cooldown_seconds: 24.0
+  alert_voice_switch_cooldown_seconds: 4.0
+  profile_interval_frames: 300
 
 report:
   unsafe_threshold: 0.45

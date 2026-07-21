@@ -197,6 +197,7 @@ class GLFWDisplay:
 
         from OpenGL.GL import (
             GL_COLOR_BUFFER_BIT,
+            GL_BGR,
             GL_TEXTURE_2D,
             GL_TEXTURE0,
             GL_UNSIGNED_BYTE,
@@ -220,7 +221,7 @@ class GLFWDisplay:
             0,
             frame.shape[1],
             frame.shape[0],
-            self._gl["GL_BGR"],
+            GL_BGR,
             GL_UNSIGNED_BYTE,
             frame,
         )
@@ -269,7 +270,7 @@ class SDL2Display:
     SDL_RENDERER_ACCELERATED = 0x00000002
     SDL_RENDERER_PRESENTVSYNC = 0x00000004
     SDL_TEXTUREACCESS_STREAMING = 1
-    SDL_PIXELFORMAT_BGR24 = 0x17301803
+    SDL_PIXELFORMAT_RGB24 = 0x17101803
     SDL_QUIT = 0x100
 
     def __init__(self, title: str, size: tuple[int, int], fullscreen: bool = True, fps: float = 30.0) -> None:
@@ -308,7 +309,7 @@ class SDL2Display:
 
         self._texture = self._lib.SDL_CreateTexture(
             self._renderer,
-            self.SDL_PIXELFORMAT_BGR24,
+            self.SDL_PIXELFORMAT_RGB24,
             self.SDL_TEXTUREACCESS_STREAMING,
             size[0],
             size[1],
@@ -368,6 +369,7 @@ class SDL2Display:
             return
         if frame.shape[1] != self._size[0] or frame.shape[0] != self._size[1]:
             frame = cv2.resize(frame, self._size, interpolation=cv2.INTER_LINEAR)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if frame.dtype != np.uint8:
             frame = frame.astype(np.uint8, copy=False)
         if not frame.flags["C_CONTIGUOUS"]:
@@ -542,15 +544,23 @@ def create_display(
     size: tuple[int, int],
     fullscreen: bool = True,
     fps: float = 30.0,
+    backend: str = "auto",
 ) -> Any:
-    if shutil.which("ffplay") is not None:
+    backend = (backend or "auto").lower()
+    if backend in ("auto", "sdl2"):
+        try:
+            return SDL2Display(title, size, fullscreen=fullscreen, fps=fps)
+        except Exception:
+            if backend != "auto":
+                raise
+    if backend in ("auto", "glfw", "opengl", "egl"):
+        try:
+            return GLFWDisplay(title, size, fullscreen=fullscreen, fps=fps)
+        except Exception:
+            if backend not in ("auto", "egl"):
+                raise
+    if backend in ("auto", "ffplay") and shutil.which("ffplay") is not None:
         return FFplayDisplay(title, size, fullscreen=fullscreen, fps=fps)
-    try:
-        return GLFWDisplay(title, size, fullscreen=fullscreen, fps=fps)
-    except Exception:
-        pass
-    try:
-        return SDL2Display(title, size, fullscreen=fullscreen, fps=fps)
-    except Exception:
-        pass
-    return OpenCVDisplay(title, size, fullscreen=fullscreen)
+    if backend in ("auto", "opencv"):
+        return OpenCVDisplay(title, size, fullscreen=fullscreen, fps=fps)
+    raise ValueError(f"Unsupported display backend: {backend}")
