@@ -47,7 +47,7 @@ git clone --branch clean-main --single-branch \
   https://github.com/TueNguyen2006/driver-drowsiness-monitor-rpi4.git
 
 cd driver-drowsiness-monitor-rpi4
-
+```
 Install system packages:
 
 ```bash
