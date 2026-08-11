@@ -1,34 +1,58 @@
 from __future__ import annotations
 
-import pickle
 import warnings
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 
-class HeadPoseEstimator:
-    __slots__ = ("model", "available")
+FOREHEAD = 10
+NOSE = 1
+MOUTH_LEFT = 61
+MOUTH_RIGHT = 291
+CHIN = 199
+LEFT_EYE = 33
+RIGHT_EYE = 263
 
-    FOREHEAD = 10
-    NOSE = 1
-    MOUTH_LEFT = 61
-    MOUTH_RIGHT = 291
-    CHIN = 199
-    LEFT_EYE = 33
-    RIGHT_EYE = 263
-    # Must match the training notebook column order:
-    # nose, forehead, left_eye, mouth_left, chin, right_eye, mouth_right.
-    KEY_ORDER = [NOSE, FOREHEAD, LEFT_EYE, MOUTH_LEFT, CHIN, RIGHT_EYE, MOUTH_RIGHT]
+# Must match the training notebook column order.
+KEY_ORDER = (NOSE, FOREHEAD, LEFT_EYE, MOUTH_LEFT, CHIN, RIGHT_EYE, MOUTH_RIGHT)
+
+
+def preprocess_landmarks(
+    landmarks: list[tuple[float, float]],
+) -> np.ndarray | None:
+    if len(landmarks) <= RIGHT_EYE:
+        return None
+    features = np.asarray(
+        [coordinate for index in KEY_ORDER for coordinate in landmarks[index]],
+        dtype=np.float64,
+    )
+    normalized = features.copy()
+    for dimension in (0, 1):
+        normalized[dimension::2] -= features[dimension]
+        scale = features[12 + dimension] - features[4 + dimension]
+        if scale != 0.0:
+            normalized[dimension::2] /= scale
+    return normalized
+
+
+class HeadPoseEstimator:
+    __slots__ = ("_estimators", "available")
 
     def __init__(self, model_path: str | Path) -> None:
-        self.model = None
+        self._estimators: list[tuple[np.ndarray, np.ndarray, float, float]] = []
         self.available = False
         try:
-            with open(model_path, "rb") as f:
-                self.model = pickle.load(f)
-            self.available = True
+            with np.load(model_path, allow_pickle=False) as data:
+                count = int(data["estimator_count"])
+                for index in range(count):
+                    self._estimators.append((
+                        np.asarray(data[f"support_vectors_{index}"], dtype=np.float64),
+                        np.asarray(data[f"dual_coef_{index}"], dtype=np.float64).reshape(-1),
+                        float(data[f"intercept_{index}"]),
+                        float(data[f"gamma_{index}"]),
+                    ))
+            self.available = len(self._estimators) == 3
         except Exception as exc:
             warnings.warn(
                 f"Head pose model disabled: cannot load {model_path} ({exc})",
@@ -36,25 +60,22 @@ class HeadPoseEstimator:
             )
 
     def estimate(self, landmarks: list[tuple[float, float]]) -> tuple[float, float, float]:
-        if not self.available or self.model is None:
+        if not self.available:
             return 0.0, 0.0, 0.0
-        if len(landmarks) < self.RIGHT_EYE + 1:
+        features = preprocess_landmarks(landmarks)
+        if features is None:
             return 0.0, 0.0, 0.0
-        features = []
-        for idx in self.KEY_ORDER:
-            if idx < len(landmarks):
-                features.append(landmarks[idx][0])
-                features.append(landmarks[idx][1])
-        if len(features) < 14:
-            return 0.0, 0.0, 0.0
-        arr = np.array(features)
-        normalized = arr.copy()
-        for dim_idx in (0, 1):
-            for feat_idx in range(dim_idx, 14, 2):
-                normalized[feat_idx] = arr[feat_idx] - arr[dim_idx]
-            diff = arr[12 + dim_idx] - arr[4 + dim_idx]
-            if diff != 0:
-                for feat_idx in range(dim_idx, 14, 2):
-                    normalized[feat_idx] /= diff
-        pitch, yaw, roll = self.model.predict([normalized]).ravel()
-        return float(pitch), float(yaw), float(roll)
+        prediction = [self._predict_rbf(features, *estimator) for estimator in self._estimators]
+        return float(prediction[0]), float(prediction[1]), float(prediction[2])
+
+    @staticmethod
+    def _predict_rbf(
+        features: np.ndarray,
+        support_vectors: np.ndarray,
+        dual_coef: np.ndarray,
+        intercept: float,
+        gamma: float,
+    ) -> float:
+        squared_distance = np.sum((support_vectors - features) ** 2, axis=1)
+        kernel = np.exp(-gamma * squared_distance)
+        return float(np.dot(dual_coef, kernel) + intercept)

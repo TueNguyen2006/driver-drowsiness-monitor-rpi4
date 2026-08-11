@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 import time
+from time import perf_counter
 from datetime import datetime
 from enum import Enum
 from collections import deque
@@ -21,6 +22,7 @@ from .hardware_controller import HardwareController
 from .models import DetectionEvent, DriverState, SessionSummary
 from .overlay import AnnotatedVideoWriter
 from .pipeline import HybridPipeline, ThreadedCamera, fourcc_to_str
+from .profiling import ProfilingWindow
 from .risk_scorer import RiskScorer
 from .ui import embed_kiosk_overlay
 
@@ -46,7 +48,7 @@ class IndustrialKiosk:
         "_last_alert_time", "_cal_start_time",
         "_last_gc", "_window_name",
         "_fps_times", "_display",
-        "_profile_sums", "_profile_count",
+        "_profiler", "_last_camera_ms", "_last_camera_handoff_ms",
         "_output", "_writer_path",
         "_last_voice_time", "_last_voice_signal", "_signal_last_voice",
     )
@@ -93,8 +95,9 @@ class IndustrialKiosk:
         self._display = None
         self._output: AsyncFrameOutput | None = None
         self._writer_path: Path | None = None
-        self._profile_sums: dict[str, float] = {}
-        self._profile_count = 0
+        self._profiler = ProfilingWindow()
+        self._last_camera_ms = 0.0
+        self._last_camera_handoff_ms = 0.0
         self._last_voice_time = 0.0
         self._last_voice_signal = ""
         self._signal_last_voice: dict[str, float] = {}
@@ -146,6 +149,9 @@ class IndustrialKiosk:
 
     def _open_camera(self) -> None:
         vision = self.cfg.vision
+        if self.cfg.runtime.write_video and not self.cfg.runtime.async_output:
+            log.warning("write_video requires async output; enabling async_output")
+            self.cfg.runtime.async_output = True
         idx = vision.camera_index
         self._cap = ThreadedCamera(
             idx,
@@ -176,10 +182,7 @@ class IndustrialKiosk:
             out_dir.mkdir(exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._writer_path = out_dir / f"session_{ts}.mp4"
-            if self.cfg.runtime.async_output:
-                self._writer = None
-            else:
-                self._writer = AnnotatedVideoWriter(self._writer_path, self._fps, (800, 480))
+            self._writer = None
 
     def _close_camera(self) -> None:
         if self._cap:
@@ -339,11 +342,14 @@ class IndustrialKiosk:
                 self._running = False
 
     def _grab_frame(self) -> np.ndarray | None:
+        started = perf_counter()
         if self._cap is None or not self._cap.isOpened():
             self._open_camera()
             if self._cap is None:
                 return None
         ret, frame = self._cap.read()
+        self._last_camera_handoff_ms = (perf_counter() - started) * 1000
+        self._last_camera_ms = self._cap.capture_latency_ms()
         if not ret:
             self._close_camera()
             return None
@@ -448,8 +454,9 @@ class IndustrialKiosk:
         self._risk_timeline = []
         self._latencies = []
         self._fps_times.clear()
-        self._profile_sums = {}
-        self._profile_count = 0
+        self._profiler.reset()
+        self._last_camera_ms = 0.0
+        self._last_camera_handoff_ms = 0.0
         self._last_voice_time = 0.0
         self._last_voice_signal = ""
         self._signal_last_voice = {}
@@ -559,22 +566,44 @@ class IndustrialKiosk:
         profile = self.pipeline.last_profile
         if not profile:
             return
-        self._profile_count += 1
-        for key, value in profile.items():
-            self._profile_sums[key] = self._profile_sums.get(key, 0.0) + value
+        profile["camera_ms"] = self._last_camera_ms
+        profile["camera_handoff_ms"] = self._last_camera_handoff_ms
+        self._profiler.record(profile)
 
     def _log_profile(self) -> None:
-        if not self._profile_count:
+        summary = self._profiler.summary()
+        if not summary:
             return
-        avg = {
-            key: value / self._profile_count
-            for key, value in sorted(self._profile_sums.items())
-        }
+        for stage, stats in summary.items():
+            log.info(
+                "Profile stage=%s count=%d mean=%.2fms p50=%.2fms p95=%.2fms max=%.2fms",
+                stage,
+                stats["count"],
+                stats["mean_ms"],
+                stats["p50_ms"],
+                stats["p95_ms"],
+                stats["max_ms"],
+            )
+        resources = self._profiler.resources()
+        temp = "n/a" if resources.temperature_c is None else f"{resources.temperature_c:.1f}C"
         log.info(
-            "Profile avg over %d frames: %s",
-            self._profile_count,
-            ", ".join(f"{k}={v:.2f}ms" for k, v in avg.items()),
+            "Resources cpu=%.1f%% rss=%.1fMB peak_rss=%.1fMB load1=%.2f temp=%s",
+            resources.cpu_percent,
+            resources.rss_mb,
+            resources.peak_rss_mb,
+            resources.load_1m,
+            temp,
         )
+        for stage, stage_stats in self.pipeline.background_profile(reset=True).items():
+            log.info(
+                "Profile background_stage=%s count=%d mean=%.2fms p50=%.2fms p95=%.2fms max=%.2fms",
+                stage,
+                stage_stats["count"],
+                stage_stats["mean_ms"],
+                stage_stats["p50_ms"],
+                stage_stats["p95_ms"],
+                stage_stats["max_ms"],
+            )
         if self._output is not None:
             stats = self._output.snapshot_stats()
             rendered = max(1, stats.rendered)
@@ -587,6 +616,17 @@ class IndustrialKiosk:
                 stats.write_ms / rendered,
                 stats.dropped,
             )
+            for stage, stage_stats in self._output.snapshot_profile(reset=True).items():
+                log.info(
+                    "Profile stage=%s count=%d mean=%.2fms p50=%.2fms p95=%.2fms max=%.2fms",
+                    stage,
+                    stage_stats["count"],
+                    stage_stats["mean_ms"],
+                    stage_stats["p50_ms"],
+                    stage_stats["p95_ms"],
+                    stage_stats["max_ms"],
+                )
+        self._profiler.reset()
 
     def _show_frame(self, frame: np.ndarray) -> None:
         if not self.cfg.runtime.display:

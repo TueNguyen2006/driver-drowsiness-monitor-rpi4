@@ -11,6 +11,11 @@ Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=%h/.Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DROWSINESS_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
 ExecStart=%h/driver-drowsiness-monitor-rpi4/.venv/bin/python run_kiosk.py
 Restart=always
 RestartSec=3

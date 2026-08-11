@@ -58,6 +58,8 @@ class GLFWDisplay:
         glfw.swap_interval(1)
         glfw.set_key_callback(self._window, self._on_key)
         glfw.set_window_close_callback(self._window, self._on_close)
+        if fullscreen:
+            glfw.set_input_mode(self._window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
 
         self._program = self._build_program()
         self._vao, self._vbo = self._build_quad()
@@ -317,6 +319,9 @@ class SDL2Display:
         if not self._texture:
             raise RuntimeError(self._get_error())
 
+        if fullscreen:
+            self._lib.SDL_ShowCursor(0)
+
         self._running = True
         self._event_buf = ctypes.create_string_buffer(64)
 
@@ -351,6 +356,8 @@ class SDL2Display:
         lib.SDL_PollEvent.restype = ctypes.c_int
         lib.SDL_SetWindowFullscreen.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         lib.SDL_SetWindowFullscreen.restype = ctypes.c_int
+        lib.SDL_ShowCursor.argtypes = [ctypes.c_int]
+        lib.SDL_ShowCursor.restype = ctypes.c_int
         lib.SDL_DestroyTexture.argtypes = [ctypes.c_void_p]
         lib.SDL_DestroyTexture.restype = None
         lib.SDL_Delay.argtypes = [ctypes.c_uint32]
@@ -524,7 +531,8 @@ class OpenCVDisplay:
         if fullscreen:
             cv2.moveWindow(self._title, 0, 0)
             cv2.setWindowProperty(self._title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        else: cv2.resizeWindow(self._title, size[0], size[1])
+        else:
+            cv2.resizeWindow(self._title, size[0], size[1])
 
     def show(self, frame: np.ndarray) -> None:
         cv2.imshow(self._title, frame)

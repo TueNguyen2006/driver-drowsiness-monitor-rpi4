@@ -89,6 +89,8 @@ python3 run_kiosk.py --debug-ui
 python3 run_kiosk.py --windowed
 python3 run_kiosk.py --no-phone
 python3 run_kiosk.py --no-display
+python3 run_kiosk.py --threads 1
+python3 run_kiosk.py --write-video
 ```
 
 For WSL from Windows PowerShell:
@@ -182,14 +184,60 @@ The kiosk UI targets an 800x480 screen. Camera frames are scaled to cover the sc
 
 `run_kiosk.py` starts fullscreen by default. Use `--windowed` only for desktop debugging when you want the normal window frame and title bar.
 
-Available display backends depend on installed packages and config:
+Available display backends depend on installed packages and config. The default is `auto`, which tries SDL2 fullscreen first and falls back only if needed:
 
 ```bash
-python3 run_kiosk.py --display-backend opencv
 python3 run_kiosk.py --display-backend auto
+python3 run_kiosk.py --display-backend opencv
 ```
 
 `ffplay` may exist as an optional video display backend only. It is not used for audio.
+
+## Raspberry Pi Performance Benchmark
+
+The production default limits OpenCV, PyTorch, OpenMP, and BLAS to one thread per library. This avoids nested thread pools oversubscribing the four Pi 4 cores. Override it only after measuring:
+
+```bash
+python3 run_kiosk.py --threads 1
+```
+
+Video recording is disabled by default. `--write-video` enables it through the latest-frame async output worker, so encoding does not block the inference loop.
+
+Run the five-stage benchmark matrix on the Pi with a representative recording:
+
+```bash
+python3 benchmarks/benchmark_pi_pipeline.py \
+  --source kiosk_recordings/sample.mp4 \
+  --frames 300 \
+  --threads 1
+```
+
+To include physical display latency, add `--display`. Results are written to `benchmark_results/pi_pipeline_*.json` with camera, MediaPipe, feature extraction, head-pose, LSTM, YOLO, render/UI, display, video writer, CPU, RAM, load, and temperature measurements.
+
+Benchmark YOLO input sizes against the current 640 output:
+
+```bash
+python3 benchmarks/benchmark_yolo_phone.py \
+  --source phone_use_validation.mp4 \
+  --frames 100 \
+  --threads 1 \
+  --sizes 320,416,640 \
+  --include-ultralytics
+```
+
+The bundled ONNX model has a fixed 640 input. The benchmark marks incompatible 320/416 attempts as failed instead of silently accepting empty detections. Do not change the production input size until a correctly exported model passes the phone-presence and bounding-box consistency gate on phone-positive footage.
+
+Optionally compare OpenCV DNN with ONNX Runtime using exactly the same input tensors and verify raw output consistency:
+
+```bash
+pip install onnxruntime
+python3 benchmarks/benchmark_onnx_runtimes.py \
+  --source phone_use_validation.mp4 \
+  --frames 50 \
+  --threads 1
+```
+
+ONNX Runtime is deliberately not a production dependency. NCNN, TFLite, and INT8 are not selected because the repository currently has no equivalent exported/quantized model and validation artifact for them.
 
 ## Raspberry Pi Hardware
 

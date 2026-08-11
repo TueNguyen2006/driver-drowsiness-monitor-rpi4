@@ -429,8 +429,8 @@ def _draw_debug_overlay(canvas: Array, processed: ProcessedFrame) -> None:
         f"LSTM: {lstm_text}",
     ]
 
-    x, y = 10, 276
-    w, h = 342, 190
+    w, h = 300, 190
+    x, y = DISPLAY_W - w - 18, 18
     roi = canvas[y:y + h, x:x + w]
     overlay = np.full(roi.shape, (8, 18, 28), dtype=np.uint8)
     cv2.addWeighted(overlay, 0.72, roi, 0.28, 0, roi)

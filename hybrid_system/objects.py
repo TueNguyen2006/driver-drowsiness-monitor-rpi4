@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import logging
 
 import cv2
 import numpy as np
+
+
+log = logging.getLogger(__name__)
 
 
 COCO_CLASSES = [
@@ -51,7 +55,7 @@ class ObjectDetector:
         "enabled", "confidence_threshold", "iou_threshold",
         "input_size",
         "phone_labels", "_session", "_input_name",
-        "_model", "_provider", "_frame_count",
+        "_model", "_provider", "_frame_count", "_last_error", "_error_logged",
     )
 
     def __init__(
@@ -73,6 +77,8 @@ class ObjectDetector:
         self._model = None
         self._provider = "none"
         self._frame_count = 0
+        self._last_error = ""
+        self._error_logged = False
 
         if not enabled or not model_path:
             return
@@ -103,17 +109,20 @@ class ObjectDetector:
             self._model = None
 
     def detect(self, frame: np.ndarray) -> list[ObjectObservation]:
+        self._last_error = ""
         if not self.enabled or self._provider == "none":
             return []
         if self._provider == "onnx" and self._model is not None:
             try:
                 return self._detect_onnx(frame)
-            except Exception:
+            except Exception as exc:
+                self._record_error(exc)
                 return []
         try:
             if self._provider == "ultralytics" and self._model is not None:
                 return self._detect_ultralytics(frame)
-        except Exception:
+        except Exception as exc:
+            self._record_error(exc)
             return []
         return []
 
@@ -208,6 +217,18 @@ class ObjectDetector:
     @property
     def provider(self) -> str:
         return self._provider
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def _record_error(self, exc: Exception) -> None:
+        self._last_error = f"{type(exc).__name__}: {exc}"
+        if not self._error_logged:
+            log.warning("Object detector inference failed: %s", self._last_error)
+            self._error_logged = True
+
+
 def _letterbox(image: np.ndarray, new_w: int, new_h: int) -> tuple[np.ndarray, float, float, float]:
     h, w = image.shape[:2]
     scale = min(new_w / w, new_h / h)

@@ -3,14 +3,14 @@ thresholds:
   mar_zscore_threshold: 20.0
   ear_trigger_frames: 30
   pitch_trigger_frames: 15
-  pitch_upper: 0.1
-  pitch_lower: -0.1
+  pitch_upper: 0.3
+  pitch_lower: -0.3
   phone_confidence: 0.45
   missing_face_frames: 50
   eye_closed_frames: 8
   drowsy_frames: 36
   yawn_frames: 40
-  distracted_frames: 12
+  distracted_frames: 30
 
 vision:
   provider: auto
@@ -24,6 +24,8 @@ vision:
   camera_width: 640
   camera_height: 480
   camera_fps: 30.0
+  process_width: 640
+  process_height: 480
 
 object_detector:
   enabled: false
@@ -42,7 +44,7 @@ lstm:
   model_path: models/lstm_latest_scripted.pt
 
 head_pose:
-  model_path: models/model.pkl
+  model_path: models/head_pose_svr.npz
 
 hardware:
   gpio_enabled: true
@@ -61,8 +63,9 @@ runtime:
   display: true
   display_backend: auto
   fullscreen: true
-  async_output: false
+  async_output: true
   kiosk_debug: false
+  inference_threads: 1
   phone_enabled: false
   alert_cooldown_seconds: 2.0
   alert_voice_global_cooldown_seconds: 8.0

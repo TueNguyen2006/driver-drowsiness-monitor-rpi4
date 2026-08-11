@@ -12,6 +12,7 @@ from .config import HybridConfig
 from .features import extract_all
 from .models import DetectionEvent, DriverState, ProcessedFrame, Severity
 from .risk_scorer import RiskScorer, SignalSmoother
+from .profiling import ProfilingWindow
 
 import threading
 import time
@@ -26,6 +27,8 @@ class AsyncObjectWorker:
         self._lock = threading.Lock()
         self._event = threading.Event()
         self._stop = threading.Event()
+        self._busy = threading.Event()
+        self._profiler = ProfilingWindow()
         self._pending: tuple[np.ndarray, float, int] | None = None
         self._latest: tuple[list[DetectionEvent], float, list[dict[str, Any]], int, float] | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -43,9 +46,23 @@ class AsyncObjectWorker:
         return result
 
     def close(self) -> None:
+        self.wait_until_idle(timeout=2.0)
         self._stop.set()
         self._event.set()
         self._thread.join(timeout=1.0)
+
+    def wait_until_idle(self, timeout: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                pending = self._pending is not None
+            if not pending and not self._busy.is_set():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def snapshot_profile(self, *, reset: bool = False) -> dict[str, dict[str, float | int]]:
+        return self._profiler.summary(reset=reset)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -54,18 +71,22 @@ class AsyncObjectWorker:
             with self._lock:
                 item = self._pending
                 self._pending = None
+                if item is not None:
+                    self._busy.set()
             if item is None:
                 continue
             frame, timestamp, frame_index = item
             started = perf_counter()
             objects = self._detector.detect(frame)
             latency_ms = (perf_counter() - started) * 1000
+            self._profiler.record({"yolo_ms": latency_ms})
             events, phone_signal = build_phone_events(
                 objects, self._cfg, timestamp, frame_index
             )
             object_dicts = [obj.to_dict() for obj in objects]
             with self._lock:
                 self._latest = (events, phone_signal, object_dicts, frame_index, latency_ms)
+            self._busy.clear()
 
 
 def build_phone_events(
@@ -106,9 +127,12 @@ class AsyncLandmarkWorker:
 
         opts = FaceLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path=str(model_path)),
-            running_mode=RunningMode.IMAGE,
+            running_mode=RunningMode.VIDEO,
             num_faces=1,
             output_face_blendshapes=False,
+            min_face_detection_confidence=0.4,
+            min_face_presence_confidence=0.4,
+            min_tracking_confidence=0.4,
         )
         self._landmarker = FaceLandmarker.create_from_options(opts)
         self._mp_image_cls = MpImage
@@ -117,17 +141,18 @@ class AsyncLandmarkWorker:
         self._lock = threading.Lock()
         self._event = threading.Event()
         self._stop = threading.Event()
-        self._pending: tuple[np.ndarray, int] | None = None
-        self._latest: tuple[list[tuple[float, float]] | None, int] | None = None
+        self._pending: tuple[np.ndarray, int, float] | None = None
+        self._latest: tuple[list[tuple[float, float]] | None, int, float] | None = None
+        self._timestamp_ms = 0
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    def submit(self, frame: np.ndarray, frame_index: int) -> None:
+    def submit(self, frame: np.ndarray, frame_index: int, timestamp: float) -> None:
         with self._lock:
-            self._pending = (frame.copy(), frame_index)
+            self._pending = (frame.copy(), frame_index, timestamp)
         self._event.set()
 
-    def poll(self) -> tuple[list[tuple[float, float]] | None, int] | None:
+    def poll(self) -> tuple[list[tuple[float, float]] | None, int, float] | None:
         with self._lock:
             latest = self._latest
             self._latest = None
@@ -151,7 +176,8 @@ class AsyncLandmarkWorker:
                 self._pending = None
             if item is None:
                 continue
-            frame, frame_index = item
+            frame, frame_index, timestamp = item
+            started = perf_counter()
             if self._process_size is not None:
                 frame = cv2.resize(frame, self._process_size, interpolation=cv2.INTER_LINEAR)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -159,12 +185,14 @@ class AsyncLandmarkWorker:
                 image_format=self._mp_image_format.SRGB,
                 data=rgb,
             )
-            result = self._landmarker.detect(image)
+            self._timestamp_ms = max(self._timestamp_ms + 1, int(timestamp * 1000))
+            result = self._landmarker.detect_for_video(image, self._timestamp_ms)
             landmarks = None
             if result.face_landmarks:
                 landmarks = [(lm.x, lm.y) for lm in result.face_landmarks[0]]
+            latency_ms = (perf_counter() - started) * 1000
             with self._lock:
-                self._latest = (landmarks, frame_index)
+                self._latest = (landmarks, frame_index, latency_ms)
 
 
 def _fourcc_value(code: str | None) -> int:
@@ -255,6 +283,7 @@ class ThreadedCamera:
         self._frame = None
         self._seq = 0
         self._last_update = 0.0
+        self._read_latency_ms = 0.0
         self._lock = threading.Lock()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -266,13 +295,16 @@ class ThreadedCamera:
 
     def _loop(self):
         while self._running:
+            started = perf_counter()
             ret, frame = self._cap.read()
+            latency_ms = (perf_counter() - started) * 1000
             if frame is not None:
                 with self._lock:
                     self._ret = ret
                     self._frame = frame
                     self._seq += 1
                     self._last_update = time.monotonic()
+                    self._read_latency_ms = latency_ms
 
     def read(self):
         with self._lock:
@@ -291,6 +323,10 @@ class ThreadedCamera:
     def sequence(self) -> int:
         with self._lock:
             return self._seq
+
+    def capture_latency_ms(self) -> float:
+        with self._lock:
+            return self._read_latency_ms
 
     def release(self):
         self._running = False
@@ -318,6 +354,7 @@ class HybridPipeline:
         self._lstm = None
         self._object_det = None
         self._object_worker: AsyncObjectWorker | None = None
+        self._landmarker_timestamp_ms = 0
 
         self._init_landmarker()
         self._init_lstm()
@@ -371,6 +408,7 @@ class HybridPipeline:
         self._last_features: dict[str, float] = {"ear": 0.5, "mar": 0.1, "puc": 0.5, "moe": 0.2}
         self._last_objects: list[dict[str, Any]] = []
         self._last_profile: dict[str, float] = {}
+        self._last_lstm_ms = 0.0
         self._debug_info: dict[str, Any] = {}
 
     def _init_landmarker(self) -> None:
@@ -390,9 +428,12 @@ class HybridPipeline:
 
             opts = FaceLandmarkerOptions(
                 base_options=python.BaseOptions(model_asset_path=str(model_path)),
-                running_mode=RunningMode.IMAGE,
+                running_mode=RunningMode.VIDEO,
                 num_faces=1,
                 output_face_blendshapes=False,
+                min_face_detection_confidence=0.4,
+                min_face_presence_confidence=0.4,
+                min_tracking_confidence=0.4,
             )
             self._landmarker = FaceLandmarker.create_from_options(opts)
             from mediapipe import ImageFormat, Image as MpImage
@@ -441,11 +482,13 @@ class HybridPipeline:
         if self._landmark_worker is not None:
             latest_landmarks = self._landmark_worker.poll()
             if latest_landmarks is not None:
-                self._last_landmarks, _ = latest_landmarks
+                self._last_landmarks, _, worker_latency_ms = latest_landmarks
+                profile["mediapipe_ms"] = worker_latency_ms
             if not skip_landmarks:
-                self._landmark_worker.submit(frame, frame_index)
+                self._landmark_worker.submit(frame, frame_index, timestamp)
             landmarks = self._last_landmarks
             if landmarks and len(landmarks) >= 468:
+                feature_started = perf_counter()
                 h, w = frame.shape[:2]
                 xs = [lm[0] * w for lm in landmarks]
                 ys = [lm[1] * h for lm in landmarks]
@@ -456,6 +499,7 @@ class HybridPipeline:
                 features = extract_all(all_points)
                 ear, mar, puc, moe = features["ear"], features["mar"], features["puc"], features["moe"]
                 self._last_features = features
+                profile["features_ms"] = (perf_counter() - feature_started) * 1000
             else:
                 ear = self._last_features["ear"]
                 mar = self._last_features["mar"]
@@ -470,9 +514,12 @@ class HybridPipeline:
                 self._last_features["puc"], self._last_features["moe"],
             )
         else:
-            landmarks = self._detect_landmarks(frame)
+            mediapipe_started = perf_counter()
+            landmarks = self._detect_landmarks(frame, timestamp)
+            profile["mediapipe_ms"] = (perf_counter() - mediapipe_started) * 1000
             self._last_landmarks = landmarks
             if landmarks and len(landmarks) >= 468:
+                feature_started = perf_counter()
                 h, w = frame.shape[:2]
                 xs = [lm[0] * w for lm in landmarks]
                 ys = [lm[1] * h for lm in landmarks]
@@ -483,6 +530,7 @@ class HybridPipeline:
                 features = extract_all(all_points)
                 ear, mar, puc, moe = features["ear"], features["mar"], features["puc"], features["moe"]
                 self._last_features = features
+                profile["features_ms"] = (perf_counter() - feature_started) * 1000
             else:
                 if self._last_features:
                     ear = self._last_features["ear"]
@@ -491,7 +539,6 @@ class HybridPipeline:
                     moe = self._last_features["moe"]
                 else:
                     ear = mar = puc = moe = 0.0
-        profile["landmarks_ms"] = (perf_counter() - stage_started) * 1000
         stage_started = perf_counter()
 
         raw_signals: dict[str, float] = {
@@ -519,11 +566,18 @@ class HybridPipeline:
             self._missing_face_counter = 0
 
             if self._head_pose_model is not None:
+                head_pose_started = perf_counter()
                 pitch, yaw, roll = self._head_pose_model.estimate(landmarks)
+                profile["head_pose_ms"] = (perf_counter() - head_pose_started) * 1000
 
+            inference_started = perf_counter()
             s = self._do_inference(
                 ear, mar, puc, moe, pitch, yaw, roll,
             )
+            inference_ms = (perf_counter() - inference_started) * 1000
+            if self._last_lstm_ms > 0.0:
+                profile["lstm_ms"] = self._last_lstm_ms
+            profile["drowsiness_logic_ms"] = max(0.0, inference_ms - self._last_lstm_ms)
             raw_signals.update(s)
             new_events.extend(self._events_from_signals(
                 timestamp, frame_index,
@@ -536,8 +590,7 @@ class HybridPipeline:
         if self._object_det:
             latest_objects = self._object_worker.poll() if self._object_worker else None
             if latest_objects is not None:
-                phone_events, phone_signal, object_dicts, _, worker_latency_ms = latest_objects
-                profile["objects_worker_ms"] = worker_latency_ms
+                phone_events, phone_signal, object_dicts, _, _ = latest_objects
                 self._last_objects = object_dicts
                 if phone_signal > raw_signals.get("phone_use", 0.0):
                     raw_signals["phone_use"] = phone_signal
@@ -549,7 +602,9 @@ class HybridPipeline:
                 if self._object_worker:
                     self._object_worker.submit(frame, timestamp, frame_index)
                 else:
+                    yolo_started = perf_counter()
                     phone_events, phone_signal, object_dicts = self._process_objects(frame, timestamp, frame_index)
+                    profile["yolo_ms"] = (perf_counter() - yolo_started) * 1000
                     self._last_objects = object_dicts
                     if phone_signal > raw_signals.get("phone_use", 0.0):
                         raw_signals["phone_use"] = phone_signal
@@ -558,7 +613,7 @@ class HybridPipeline:
             elif self._phone_hold_counter > 0:
                 raw_signals["phone_use"] = max(raw_signals.get("phone_use", 0.0), 1.0)
                 self._phone_hold_counter -= 1
-        profile["objects_ms"] = (perf_counter() - stage_started) * 1000
+        profile["yolo_dispatch_ms"] = (perf_counter() - stage_started) * 1000
         stage_started = perf_counter()
 
         smoothed = self.smoother.update(raw_signals)
@@ -590,7 +645,9 @@ class HybridPipeline:
             debug_info=dict(self._debug_info),
         )
 
-    def _detect_landmarks(self, frame: np.ndarray) -> list[tuple[float, float]] | None:
+    def _detect_landmarks(
+        self, frame: np.ndarray, timestamp: float
+    ) -> list[tuple[float, float]] | None:
         if self._landmarker is None:
             return None
         h, w = frame.shape[:2]
@@ -604,16 +661,21 @@ class HybridPipeline:
         image = self._mp_image_cls(
             image_format=self._mp_image_format.SRGB, data=rgb
         )
-        result = self._landmarker.detect(image)
+        self._landmarker_timestamp_ms = max(
+            self._landmarker_timestamp_ms + 1, int(timestamp * 1000)
+        )
+        result = self._landmarker.detect_for_video(
+            image, self._landmarker_timestamp_ms
+        )
         if not result.face_landmarks:
             return None
-        # Raw normalized coords (0..1) — process_frame converts to pixels via w/h
         return [(lm.x, lm.y) for lm in result.face_landmarks[0]]
 
     def _do_inference(
         self, ear: float, mar: float, puc: float, moe: float,
         pitch: float, yaw: float, roll: float,
     ) -> dict[str, float]:
+        self._last_lstm_ms = 0.0
         ear_n = self.calibrator.normalize_ear(ear)
         mar_n = self.calibrator.normalize_mar(mar)
         puc_n = self.calibrator.normalize_puc(puc)
@@ -670,9 +732,11 @@ class HybridPipeline:
             self._frame_before_run += 1
             if self._frame_before_run >= 15 and len(inp) == 20:
                 self._frame_before_run = 0
+                lstm_started = perf_counter()
                 self._lstm_label = (
                     self._lstm.classify(inp) if self._lstm is not None else 0
                 )
+                self._last_lstm_ms = (perf_counter() - lstm_started) * 1000
                 self._decision_count = (
                     0 if self._lstm_label == 0 else self._decision_count + 1
                 )
@@ -824,6 +888,18 @@ class HybridPipeline:
     @property
     def last_profile(self) -> dict[str, float]:
         return dict(self._last_profile)
+
+    def wait_for_background(self, timeout: float = 2.0) -> bool:
+        if self._object_worker is None:
+            return True
+        return self._object_worker.wait_until_idle(timeout)
+
+    def background_profile(
+        self, *, reset: bool = False
+    ) -> dict[str, dict[str, float | int]]:
+        if self._object_worker is None:
+            return {}
+        return self._object_worker.snapshot_profile(reset=reset)
 
     def close(self) -> None:
         if self._object_worker is not None:

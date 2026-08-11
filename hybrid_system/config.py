@@ -48,8 +48,8 @@ class VisionConfig:
     camera_width: int = 640
     camera_height: int = 480
     camera_fps: float = 30.0
-    process_width: int = 0
-    process_height: int = 0
+    process_width: int = 640
+    process_height: int = 480
 
 
 @dataclass(slots=True)
@@ -89,7 +89,7 @@ class LSTMConfig:
 
 @dataclass(slots=True)
 class HeadPoseConfig:
-    model_path: str = "models/model.pkl"
+    model_path: str = "models/head_pose_svr.npz"
     axis_draw_size: int = 50
 
 
@@ -115,9 +115,10 @@ class RuntimeConfig:
     display: bool = True
     display_backend: str = "auto"
     fullscreen: bool = True
-    async_output: bool = False
+    async_output: bool = True
     kiosk_debug: bool = False
-    write_video: bool = True
+    write_video: bool = False
+    inference_threads: int = 1
     phone_enabled: bool = True
     alert_cooldown_seconds: float = 2.0
     alert_voice_global_cooldown_seconds: float = 8.0
